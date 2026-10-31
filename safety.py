@@ -1,4 +1,4 @@
-"""Shared safe errors and the temporary increment-one mutation barrier."""
+"""Shared safe errors and the mandatory mutation barrier for read-only increments."""
 
 
 class SafetyError(ValueError):

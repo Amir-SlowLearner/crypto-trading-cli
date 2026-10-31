@@ -13,6 +13,7 @@ class ParserTests(OfflineTestCase):
             'cancelall symbol=BTCUSDT dry', 'close symbol=BTCUSDT position=long dry',
             'leverage symbol=BTCUSDT x=2 dry', 'positions', 'positions symbol=BTCUSDT',
             'orders symbol=BTCUSDT', 'info symbol=BTCUSDT', 'balance', 'help', 'exit', 'quit',
+            'account', 'modes', 'modes symbol=ETHUSDT',
         ]
         for line in examples:
             with self.subTest(line=line): parse(line.split())
@@ -40,6 +41,7 @@ class ParserTests(OfflineTestCase):
             'leverage symbol=BTCUSDT', 'balance symbol=BTCUSDT',
             'orders symbol=BTCUSDT dry', 'positions dry', 'help extra', 'exit extra',
             'quit confirm=yes', 'buy symbol=BTCUSDT qty=1 cl_id=' + 'a' * 41,
+            'account symbol=BTCUSDT', 'modes dry',
             'buy symbol=BTCUSDT qty=1 cl_id=unsafe/id',
         ]
         for line in examples:

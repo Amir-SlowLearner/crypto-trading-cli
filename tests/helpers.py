@@ -1,4 +1,5 @@
 from copy import deepcopy
+from decimal import Decimal
 import socket
 import unittest
 from unittest.mock import Mock, patch
@@ -39,6 +40,23 @@ def make_client(*, live=False, markets=None, limits=None):
     ex.fetch_open_orders = Mock(return_value=[])
     ex.fetch_positions = Mock(return_value=[])
     ex.fetch_balance = Mock(return_value={'USDT': {'free': 100, 'used': 0, 'total': 100}})
+    # Keep the first-increment normalized position fixtures useful for dry-close
+    # regression tests. New discovery tests use documented raw fixtures directly.
+    def native_positions(params):
+        rows = []
+        for position in ex.fetch_positions():
+            symbol = position.get('symbol')
+            market = ex.markets.get(symbol) or {}
+            contracts = position.get('contracts')
+            size = (Decimal(str(contracts)) * Decimal(str(market.get('contractSize', 1)))
+                    if contracts is not None else None)
+            rows.append({'symbol': market.get('id', symbol), 'sizeRq': size,
+                         'side': {'long': 'Buy', 'short': 'Sell'}.get(position.get('side'), position.get('side')),
+                         **(position.get('info') or {})})
+        return {'code': 0, 'data': {'account': {'currency': 'USDT'}, 'positions': rows}}
+    ex.privateGetUtaApiRiskRiskMode = Mock(return_value={'code': 0, 'data': {'riskMode': 'Classic'}})
+    ex.privateGetGAccountsPositions = Mock(side_effect=native_positions)
+    ex.privateGetGAccountsRiskUnit = Mock(return_value={'code': 0, 'data': []})
     for name in ('create_order', 'edit_order', 'cancel_order', 'cancel_all_orders',
                  'set_leverage', 'set_position_mode', 'set_margin_mode'):
         setattr(ex, name, Mock(side_effect=AssertionError('Mutation prohibited in tests')))

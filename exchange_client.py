@@ -5,18 +5,19 @@ No account, position or margin settings are changed during initialization.
 """
 from decimal import Decimal
 
-import ccxt
-
+from account_discovery import AccountDiscovery
 from command_parser import dec
 from config import RiskLimits
 from safety import SafetyError, reject_mutation
+from readonly_exchange import ReadOnlyPhemex
+from instrument_specs import inspect_instrument
 
 
 class PhemexClient:
     def __init__(self, api_key, api_secret, live=False, *, limits=None, exchange=None):
         self.live = live
         self.limits = limits if limits is not None else RiskLimits()
-        self.ex = exchange if exchange is not None else ccxt.phemex({
+        self.ex = exchange if exchange is not None else ReadOnlyPhemex({
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": True,
@@ -33,9 +34,10 @@ class PhemexClient:
 
     @staticmethod
     def _supported(market):
+        native_status = (market.get('info') or {}).get('status')
         return (market.get("swap") is True and market.get("linear") is True
                 and market.get("settle") == "USDT" and market.get("quote") == "USDT"
-                and market.get("active") is True)
+                and market.get("active") is True and native_status in (None, 'Listed'))
 
     def resolve(self, raw):
         raw = (raw or "").strip().upper()
@@ -54,17 +56,20 @@ class PhemexClient:
 
     def market_info(self, symbol):
         m = self.ex.market(self.resolve(symbol))
-        limits = m.get("limits") or {}
+        specs = self.instrument(symbol)
         return {
             "id": m["id"], "symbol": m["symbol"],
-            "contract_size": m.get("contractSize"),
-            "min_amount": (limits.get("amount") or {}).get("min"),
-            "max_amount": (limits.get("amount") or {}).get("max"),
-            "min_cost": (limits.get("cost") or {}).get("min"),
-            "max_cost": (limits.get("cost") or {}).get("max"),
+            "contract_size": specs['contract_size'].value,
+            "min_amount": specs['min_contracts'].value,
+            "max_amount": specs['max_contracts'].value,
+            "min_cost": specs['min_notional'].value,
+            "max_cost": specs['max_notional'].value,
             "amount_precision": (m.get("precision") or {}).get("amount"),
             "price_precision": (m.get("precision") or {}).get("price"),
         }
+
+    def instrument(self, symbol):
+        return inspect_instrument(self.ex, symbol)
 
     def contract_size(self, symbol):
         return dec("contract size", str(self.market_info(symbol)["contract_size"]))
@@ -84,7 +89,15 @@ class PhemexClient:
         # CCXT precision helpers accept decimal strings. Avoid a float round-trip.
         rounded = dec("normalized amount", self.ex.amount_to_precision(symbol, str(amount)))
         info = self.market_info(symbol)
+        native = self.ex.market(symbol).get('info') or {}
+        if native.get('maxOrderQtyRq') is not None and info['max_amount'] is None:
+            raise SafetyError('Native quantity limit is invalid or unverified')
         self._bounds(rounded, info["min_amount"], info["max_amount"], "amount")
+        specs = self.instrument(symbol)
+        step = specs['quantity_step'].value
+        if (self.ex.market(symbol).get('info') or {}).get('qtyStepSize') is not None:
+            if step is None or (rounded * self.contract_size(symbol)) % step:
+                raise SafetyError('Normalized amount does not satisfy the native quantity step')
         if rounded > amount:
             raise SafetyError("Amount normalization must not increase requested size")
         return rounded
@@ -93,8 +106,16 @@ class PhemexClient:
         symbol = self.resolve(symbol)
         price = dec("price", str(price))
         rounded = dec("normalized price", self.ex.price_to_precision(symbol, str(price)))
-        limits = (self.ex.market(symbol).get("limits") or {}).get("price") or {}
-        self._bounds(rounded, limits.get("min"), limits.get("max"), "price")
+        specs = self.instrument(symbol)
+        native = self.ex.market(symbol).get('info') or {}
+        for field, key in (('minPriceRp', 'min_price'), ('maxPriceRp', 'max_price')):
+            if native.get(field) is not None and specs[key].value is None:
+                raise SafetyError('Native price bounds are invalid or inconsistent')
+        self._bounds(rounded, specs['min_price'].value, specs['max_price'].value, "price")
+        tick = specs['price_tick'].value
+        if (self.ex.market(symbol).get('info') or {}).get('tickSize') is not None:
+            if tick is None or rounded % tick:
+                raise SafetyError('Normalized price does not satisfy the native price tick')
         return rounded
 
     @staticmethod
@@ -107,30 +128,44 @@ class PhemexClient:
     def notional(self, symbol, amount, price):
         result = amount * self.contract_size(symbol) * price
         info = self.market_info(symbol)
+        if (self.ex.market(symbol).get('info') or {}).get('minOrderValueRv') is not None and info['min_cost'] is None:
+            raise SafetyError('Native minimum order value is invalid or unverified')
         self._bounds(result, info["min_cost"], info["max_cost"], "notional")
         return result
 
     def balance(self):
-        # Raw account type/equity verification is a later increment. These are
-        # CCXT's basic swap balance fields, not a validated available-margin view.
-        bal = self.ex.fetch_balance({"type": "swap", "code": "USDT"})
-        usdt = bal.get("USDT", {})
-        return {"free": usdt.get("free"), "used": usdt.get("used"), "total": usdt.get("total")}
+        return self.account().wallet
+
+    def account(self):
+        """Fresh authenticated, scoped discovery; never changes exchange settings."""
+        return AccountDiscovery(self.ex).discover()
 
     def positions(self, symbol=None):
-        syms = [self.resolve(symbol)] if symbol else None
-        rows = self.ex.fetch_positions(syms, {"code": "USDT"})
+        # Compatibility shape for existing dry close previews. It uses the same
+        # conservative discovery facts as account/positions/modes inspection.
+        selected = self.instrument(symbol)['symbol'].value if symbol else None
+        report = self.account()
+        if not report.positions_available or not report.positions_complete:
+            raise SafetyError('Position state is unavailable or incomplete; refusing to treat it as empty')
         result = []
-        for row in rows:
-            raw_size = row.get("contracts")
-            if raw_size is None:
-                raise SafetyError("Position size is unavailable; account state is unverified")
-            size = Decimal(str(raw_size))
-            if not size.is_finite() or size < 0:
-                raise SafetyError("Position size is invalid; account state is unverified")
-            if size:
-                self.resolve(row.get("symbol"))
-                result.append(row)
+        for row in report.positions:
+            if selected and row['symbol'].value != selected:
+                continue
+            size = row['contracts'].value
+            if size is None:
+                raise SafetyError('Position size is unknown')
+            if size == 0:
+                continue
+            mode = row['position_mode'].value
+            result.append({
+                'symbol': row['symbol'].value, 'contracts': size, 'side': row['direction'].value,
+                'entryPrice': row['entry_price'].value, 'markPrice': row['mark_price'].value,
+                'liquidationPrice': row['liquidation_price'].value,
+                'unrealizedPnl': row['unrealized_pnl'].value, 'leverage': row['configured_leverage'].value,
+                'marginMode': row['margin_mode'].value,
+                'info': {'posSide': row['position_side'].value,
+                         'posMode': {'one_way': 'OneWay', 'hedge': 'Hedged'}.get(mode)},
+            })
         return result
 
     def open_orders(self, symbol):

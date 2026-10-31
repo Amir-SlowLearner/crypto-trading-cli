@@ -22,6 +22,8 @@ SCHEMAS = {
     "info": ({"symbol"}, {"symbol"}, set()),
     "positions": ({"symbol"}, set(), set()),
     "balance": (set(), set(), set()),
+    "account": (set(), set(), set()),
+    "modes": ({"symbol"}, set(), set()),
     "help": (set(), set(), set()),
     "exit": (set(), set(), set()),
     "quit": (set(), set(), set()),

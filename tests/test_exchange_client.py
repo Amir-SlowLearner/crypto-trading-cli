@@ -101,7 +101,7 @@ class AdapterTests(OfflineTestCase):
         ex.fetch_positions.return_value = [{'symbol': SYMBOL, 'contracts': 0}]
         self.assertEqual(client.positions(), [])
         ex.fetch_positions.side_effect = ccxt.AuthenticationError('synthetic')
-        with self.assertRaises(ccxt.AuthenticationError): client.positions()
+        with self.assertRaises(SafetyError): client.positions()
 
     def test_testnet_is_default_and_no_settings_are_changed(self):
         client, ex = make_client()
@@ -113,7 +113,7 @@ class AdapterTests(OfflineTestCase):
 
     def test_transport_has_timeout_rate_limit_and_no_retries(self):
         ex = Mock()
-        with patch('exchange_client.ccxt.phemex', return_value=ex) as factory:
+        with patch('exchange_client.ReadOnlyPhemex', return_value=ex) as factory:
             PhemexClient('KEY', 'SECRET')
         options = factory.call_args.args[0]
         self.assertEqual(options['timeout'], 15000)

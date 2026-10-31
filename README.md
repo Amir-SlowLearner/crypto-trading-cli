@@ -1,13 +1,20 @@
-# Phemex trading CLI — safety foundation
+# Phemex trading CLI — read-only account discovery
 
-This is the first implementation increment, **not a completed trading application**.
+This is the second implementation increment, **not a completed trading application**.
+Read-only account discovery is implemented and tested offline. A user-run testnet
+check verified authentication, BTCUSDT position discovery and the updated configured
+leverage after a website change from 10x to 15x. Both UTA risk reads returned HTTP
+500/code 10500 with reason `retry_later`; their root cause remains unresolved.
+Accounting type and account-wide financial values remain unknown, and minimum
+discovery checks remain failed. See [account discovery](docs/account-discovery.md) for
+field provenance, limitations and the optional opt-in testnet check.
 The supported integration is CCXT, limited to active USDT-settled linear perpetuals.
 BTC, ETH, SOL and XRP are supported when the selected environment lists them with
 valid instrument metadata; their current availability has not been checked.
 
 **All exchange mutations are blocked in both environments.** There is no runtime
 flag to enable them. The CLI currently offers read-only commands and dry previews.
-This temporary restriction is necessary until account/mode discovery, position-aware
+This temporary restriction is necessary until exchange verification, position-aware
 risk checks and durable operation reconciliation are implemented and tested.
 
 ## Setup
@@ -60,7 +67,9 @@ mutations are also blocked. It is not a second supported trading implementation.
 ## Commands
 
 ```text
+account
 balance
+modes [symbol=BTCUSDT]
 positions [symbol=BTCUSDT]
 info symbol=BTCUSDT
 orders symbol=BTCUSDT
@@ -94,9 +103,12 @@ verified. Generated UUID client IDs avoid timestamp collisions but do **not** ye
 provide durable duplicate prevention or restart recovery.
 
 Raw exchange exceptions, responses, commands and tracebacks are not logged by the
-CLI. Exchange failures display the exception class and unverified-state warning;
-there are no automatic retries. Do not enable CCXT verbose request logging with
-real credentials. Persistent audit logging will be implemented with reconciliation.
+CLI. Account discovery displays sanitized failure categories, HTTP status and numeric
+exchange codes; other failures display the exception class and unverified-state
+warning. There are no automatic retries. The read-only adapter suppresses CCXT
+DEBUG/verbose payload logging and raw response caches. Do not enable raw request
+logging elsewhere with real credentials. Persistent audit logging will be
+implemented with reconciliation.
 
 ## Tests and verified scope
 
@@ -106,9 +118,12 @@ real credentials. Persistent audit logging will be implemented with reconciliati
 ```
 
 The suite blocks HTTP/socket connections, uses synthetic credentials and instrument
-fixtures, and exercises the installed CCXT precision helpers. No Phemex account,
-order, fill, cancellation, setting or protection lifecycle has been verified.
-A passing suite does not establish production readiness.
+fixtures, and exercises the installed CCXT precision helpers. User-run testnet checks
+verified partial authenticated discovery, including updated BTCUSDT configured
+leverage. Successful accounting/risk-unit reads and nonzero positions remain
+unverified, as do orders, fills, cancellation, CLI setting changes and protection
+lifecycles. See [known testnet limitations](docs/account-discovery.md#known-testnet-limitations-and-observed-verification).
+A passing suite and partial testnet discovery do not establish production readiness.
 
 | Review finding | Foundation treatment |
 | --- | --- |
@@ -126,13 +141,21 @@ A passing suite does not establish production readiness.
 | Native client no timeout/API-error check or correct USDT balance query | Read timeout/error handling and balance query fixed; legacy writes blocked |
 | Old terminal starts on import / API error appears as empty orders | Old terminal consolidated; imports inert; exchange errors reported as unverified |
 
-## Next increment (requires approval)
+## Read-only discovery and next increment
 
-Start with authenticated **read-only** discovery of classic versus unified/multi-asset
-accounting, actual position/margin modes, equity and available margin. Add sanitized
-raw-response fixtures and verify interpretation before building the durable intent
-journal and reconciliation state machine. Unsupported/ambiguous account states must
-block trading; the application must never change settings to match assumptions.
+`account`, `balance`, `positions` and `modes` now use fresh authenticated discovery
+with explicit reported/derived/unknown fields. Risk-unit equity and available-margin
+estimates remain scoped; unified account-wide available margin is unknown. Missing
+or conflicting account fields never default to Classic/isolated/one-way settings.
+`info` exposes native USDT instrument limits retained by CCXT. All mutations remain
+blocked by application and transport guards. See [the detailed field table and
+optional testnet integration check](docs/account-discovery.md).
+
+The recommended next increment is a durable operation-intent journal, reconciliation
+and restart recovery, using fresh validated account state and position-aware risk
+checks. The unresolved accounting/risk-unit discovery must first be addressed and
+verified with separate authorization. Unsupported/ambiguous account states must block trading; the
+application must never change settings to match assumptions.
 
 Subsequent work must cover position-aware exposure, full/partial reduce-only
 execution, protection lifecycle, cancellation categories, deliberate settings

@@ -212,12 +212,13 @@ class CliRegressionTests(OfflineTestCase):
             importlib.reload(terminal_v2)
 
     def test_read_commands_keep_unverified_fields_explicit(self):
-        client, ex = make_client()
-        self.assertIn('available margin are unverified', self.run_command(client, 'balance'))
+        from tests.account_fixtures import discovery_client
+        client, ex = discovery_client()
+        self.assertIn('available_margin: unknown', self.run_command(client, 'balance'))
         self.assertIn('contract_size', self.run_command(client, 'info symbol=BTCUSDT'))
-        self.assertIn('No nonzero positions returned', self.run_command(client, 'positions'))
-        ex.fetch_positions.return_value = [position()]
-        self.assertIn('posMode=Hedged', self.run_command(client, 'positions symbol=BTCUSDT'))
+        self.assertIn('one_way', self.run_command(client, 'positions symbol=BTCUSDT'))
+        self.assertIn('hedge', self.run_command(client, 'modes symbol=ETHUSDT'))
+        self.assertIn('accounting: classic', self.run_command(client, 'account'))
         ex.fetch_open_orders.return_value = [open_order()]
         self.assertIn('order-1', self.run_command(client, 'orders symbol=BTCUSDT'))
         self.assertIn('mutations are disabled', self.run_command(client, 'help'))

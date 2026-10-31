@@ -5,7 +5,8 @@ Live connectivity additionally requires --live, PHEMEX_ALLOW_LIVE=true, and LIVE
 confirmation. All exchange mutations are disabled in this increment.
 
 Commands:
-  balance | positions [symbol=BTCUSDT] | info symbol=BTCUSDT
+  account | balance | modes [symbol=BTCUSDT]
+  positions [symbol=BTCUSDT] | info symbol=BTCUSDT
   orders symbol=BTCUSDT
   buy|sell symbol=BTCUSDT qty=0.002|usdt=100 [price=64000] [sl=60000]
            [tp=70000] [position=Long|Short] [type=market|limit] [cl_id=ID] dry
@@ -18,7 +19,8 @@ Commands:
 
 qty is base-asset quantity; amendment qty is the new total including fills.
 Close currently previews a full reduction only; partial-close arguments are rejected.
-Previews do not verify account mode, aggregate exposure or protection coverage.
+Account discovery is read-only and scoped; successful discovery does not establish
+trading safety. Previews do not verify aggregate exposure or protection coverage.
 """
 import argparse
 from decimal import Decimal
@@ -194,26 +196,84 @@ def cmd_cancelall(client, parts):
     print("Canceling protection can leave an open position unprotected.")
 
 
+def print_report_header(report):
+    print(f"Authentication: {report.authenticated}; accounting: {report.account_type}")
+    print(f"Read window: {report.started_at} -> {report.completed_at} (sequential, not atomic)")
+    print(f"Minimum discovery checks passed: {report.complete}; exchange mutations remain disabled.")
+    for issue in report.issues:
+        print(f"Issue: {issue}")
+
+
+def print_balances(report):
+    print("USDT wallet (account-wide available margin is not inferred):")
+    for key, value in report.wallet.items():
+        print(f"  {key}: {value}")
+    for index, unit in enumerate(report.risk_units, 1):
+        print(f"Risk unit {index}: currency={unit['currency']}; scope={unit['risk_type']}")
+        for key, value in unit.items():
+            if key not in {'currency', 'risk_type'}:
+                print(f"  {key}: {value}")
+    print("Risk-unit totals have distinct scopes/currencies and must not be summed.")
+
+
+def selected_positions(client, report, args):
+    if 'symbol' not in args:
+        return report.positions
+    symbol = client.instrument(args['symbol'])['symbol'].value
+    return [p for p in report.positions if p['symbol'].value == symbol]
+
+
+def print_positions(report, rows, *, modes_only=False):
+    if not report.positions_available:
+        print("Positions/configuration unavailable; this is not an empty-account result.")
+        return
+    if not modes_only:
+        rows = [p for p in rows if p['contracts'].value is None or p['contracts'].value != 0]
+    if not rows:
+        if modes_only:
+            print("No configuration rows returned for this selection; position/margin modes are unknown.")
+        else:
+            print("No nonzero positions returned for this selection; rows with unknown size are retained.")
+    for row in rows:
+        print(f"Position: {row['symbol']}; side={row['position_side']}; contracts={row['contracts']}")
+        keys = ('position_mode', 'margin_mode', 'configured_leverage') if modes_only else tuple(row)
+        for key in keys:
+            if key not in {'symbol', 'position_side', 'contracts'}:
+                print(f"  {key}: {row[key]}")
+    print("Modes apply only to the returned instrument/leg; no defaults are inferred for other symbols.")
+
+
+def cmd_account(client, parts):
+    parse(parts)
+    report = client.account()
+    print_report_header(report)
+    print_balances(report)
+    print_positions(report, report.positions)
+
+
 def cmd_balance(client, parts):
     parse(parts)
-    balance = client.balance()
-    print(f"USDT free={balance['free']} used={balance['used']} total={balance['total']}")
-    print("Basic CCXT balance; account type, equity and available margin are unverified.")
+    report = client.account()
+    print_report_header(report)
+    print_balances(report)
 
 
 def cmd_positions(client, parts):
     args, _ = parse(parts)
-    symbol = client.resolve(args["symbol"]) if "symbol" in args else None
-    rows = client.positions(symbol)
-    if not rows:
-        print("No nonzero positions returned by the exchange.")
-    for p in rows:
-        info = p.get("info") or {}
-        print(f"{p.get('symbol')} {p.get('side')} contracts={p.get('contracts')} "
-              f"posSide={info.get('posSide')} posMode={info.get('posMode')}")
-        print(f"entry={p.get('entryPrice')} mark={p.get('markPrice')} "
-              f"liq={p.get('liquidationPrice')} uPnL={p.get('unrealizedPnl')} leverage={p.get('leverage')}")
-    print("Snapshot only; accounting mode and PnL freshness are unverified.")
+    if 'symbol' in args:
+        client.instrument(args['symbol'])  # reject unsupported input before private requests
+    report = client.account()
+    print_report_header(report)
+    print_positions(report, selected_positions(client, report, args))
+
+
+def cmd_modes(client, parts):
+    args, _ = parse(parts)
+    if 'symbol' in args:
+        client.instrument(args['symbol'])
+    report = client.account()
+    print_report_header(report)
+    print_positions(report, selected_positions(client, report, args), modes_only=True)
 
 
 def cmd_close(client, parts):
@@ -247,7 +307,7 @@ def cmd_close(client, parts):
 
 def cmd_info(client, parts):
     args, _ = parse(parts)
-    for key, value in client.market_info(client.resolve(args["symbol"])).items():
+    for key, value in client.instrument(args["symbol"]).items():
         print(f"{key:17}: {value}")
 
 
@@ -261,7 +321,7 @@ COMMANDS = {
     "buy": cmd_buy, "sell": cmd_sell, "close": cmd_close, "leverage": cmd_leverage,
     "orders": cmd_orders, "amend": cmd_amend, "cancel": cmd_cancel,
     "cancelall": cmd_cancelall, "balance": cmd_balance, "positions": cmd_positions,
-    "info": cmd_info, "help": cmd_help,
+    "info": cmd_info, "help": cmd_help, "account": cmd_account, "modes": cmd_modes,
 }
 
 
@@ -299,7 +359,7 @@ def repl(client):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     parser.add_argument("--live", action="store_true", help="connect to live endpoints in read-only mode")
     parser.add_argument("--env-file", type=Path, help="explicit profile file (default: project test.env/live.env)")
     options = parser.parse_args(argv)
