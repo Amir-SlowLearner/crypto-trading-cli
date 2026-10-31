@@ -31,7 +31,7 @@ class CliRegressionTests(OfflineTestCase):
     def test_price_only_and_combined_amendment_caps_use_final_values(self):
         client, ex = make_client()
         ex.fetch_open_orders.return_value = [open_order(amount=2)]
-        for suffix in ('price=100.6', 'price=100 qty=2.001'):
+        for suffix in ('price=101', 'price=100 qty=2.001'):
             with self.subTest(suffix=suffix), self.assertRaisesRegex(SafetyError, 'MAX_NOTIONAL'):
                 self.run_command(client, 'amend symbol=BTCUSDT ord_id=order-1 ' + suffix + ' dry')
 
@@ -68,37 +68,37 @@ class CliRegressionTests(OfflineTestCase):
     def test_stop_rounding_to_entry_is_rejected_for_both_directions(self):
         client, _ = make_client()
         for line in (
-            'buy symbol=BTCUSDT qty=1 price=100.1 sl=99.9 dry',
-            'buy symbol=BTCUSDT qty=1 price=100.1 tp=100.2 dry',
-            'sell symbol=BTCUSDT qty=1 price=100.1 sl=100.2 dry',
-            'sell symbol=BTCUSDT qty=1 price=100.1 tp=99.9 dry',
+            'buy symbol=BTCUSDT qty=1 price=100.1 sl=99.9 action=open position_side=long current_qty=0 dry',
+            'buy symbol=BTCUSDT qty=1 price=100.1 tp=100.2 action=open position_side=long current_qty=0 dry',
+            'sell symbol=BTCUSDT qty=1 price=100.1 sl=100.2 action=open position_side=short current_qty=0 dry',
+            'sell symbol=BTCUSDT qty=1 price=100.1 tp=99.9 action=open position_side=short current_qty=0 dry',
         ):
             with self.subTest(line=line), self.assertRaises(SafetyError): self.run_command(client, line)
 
     def test_preview_uses_final_normalized_prices_and_quantity(self):
         client, ex = make_client()
-        result = self.run_command(client, 'buy symbol=BTCUSDT qty=1.0019 price=100.4 sl=98.6 tp=110.2 dry')
+        result = self.run_command(client, 'buy symbol=BTCUSDT qty=1.0019 price=100 sl=99 tp=110 trigger=last trigger_price=100 action=open position_side=long current_qty=0 dry')
         self.assertIn('contracts: 1.001', result)
         self.assertIn('price: 100', result)
         self.assertIn('SL / TP: 99 / 110', result)
-        self.assertNotIn('100.4', result)
-        self.assertNotIn('1.0019', result)
+        self.assertIn('Requested quantity: 1.0019', result)
+        self.assertIn('Quantity was normalized DOWN', result)
         ex.create_order.assert_not_called()
 
     def test_requested_base_quantity_and_usdt_convert_via_contract_size(self):
         market = {**deepcopy(MARKET), 'contractSize': 2}
         client, _ = make_client(markets=[market])
         for size in ('qty=1', 'usdt=100'):
-            result = self.run_command(client, f'buy symbol=BTCUSDT {size} price=100 dry')
+            result = self.run_command(client, f'buy symbol=BTCUSDT {size} price=100 action=open position_side=long current_qty=0 dry')
             self.assertIn('contracts: 0.5', result)
-            self.assertIn('notional: ~100', result)
+            self.assertIn('Notional: 100', result)
 
     def test_reduction_or_unknown_mode_cannot_bypass_stop_validation(self):
         client, _ = make_client()
         for line in (
-            'buy symbol=BTCUSDT qty=1 position=Short dry',
-            'sell symbol=BTCUSDT qty=1 position=Long dry',
-            'buy symbol=BTCUSDT qty=1 position=Merged sl=200 dry',
+            'buy symbol=BTCUSDT qty=1 action=open position_side=short current_qty=0 price=100 dry',
+            'sell symbol=BTCUSDT qty=1 action=open position_side=long current_qty=0 price=100 dry',
+            'buy symbol=BTCUSDT qty=1 action=open position_side=Merged current_qty=0 sl=200 price=100 dry',
         ):
             with self.subTest(line=line), self.assertRaises(SafetyError): self.run_command(client, line)
 
@@ -106,7 +106,7 @@ class CliRegressionTests(OfflineTestCase):
         client, _ = make_client()
         values = []
         for _ in range(20):
-            output = self.run_command(client, 'buy symbol=BTCUSDT qty=1 dry')
+            output = self.run_command(client, 'buy symbol=BTCUSDT qty=1 action=open position_side=long current_qty=0 reference_price=100 dry')
             value = re.search(r'proposed cl_id: ([0-9a-f]+)', output).group(1)
             self.assertLessEqual(len(value), 40)
             values.append(value)
@@ -119,29 +119,29 @@ class CliRegressionTests(OfflineTestCase):
         ex.fetch_positions.assert_not_called()
         ex.create_order.assert_not_called()
 
-    def test_close_preview_preserves_both_modes_and_directions(self):
+    def test_close_preview_uses_only_explicit_hedge_context_for_both_directions(self):
         client, ex = make_client()
-        for mode in ('OneWay', 'Hedged'):
-            for direction in ('long', 'short'):
-                p = position(mode=mode, direction=direction)
-                ex.fetch_positions.return_value = [p]
-                result = self.run_command(client, 'close symbol=BTCUSDT dry')
-                self.assertIn('posSide=' + p['info']['posSide'], result)
-                self.assertIn('reduceOnly=true', result)
-                self.assertIn(('sell' if direction == 'long' else 'buy') + ' 2 contracts', result)
+        for leg in ('long', 'short'):
+            result = self.run_command(client, f'close symbol=BTCUSDT action=close position_side={leg} current_qty=2 qty=2 reference_price=100 reduce_only=true dry')
+            self.assertIn('posSide=' + leg.capitalize(), result)
+            self.assertIn('reduceOnly=true', result)
+            self.assertIn('direction: ' + ('sell' if leg == 'long' else 'buy'), result)
+            self.assertIn('contracts: 2', result)
+        ex.fetch_positions.assert_not_called()
+        ex.privateGetUtaApiRiskRiskMode.assert_not_called()
         ex.create_order.assert_not_called()
 
     def test_close_rejects_missing_inconsistent_or_ambiguous_state(self):
         client, ex = make_client()
-        for rows in (
-            [], [position(), position(direction='short')],
-            [{**position(), 'info': {}}],
-            [{**position(), 'side': 'unknown'}],
-            [{**position(), 'info': {'posMode': 'OneWay', 'posSide': 'Long'}}],
+        for line in (
+            'close symbol=BTCUSDT dry',
+            'close symbol=BTCUSDT action=close position_side=long current_qty=2 qty=1 reference_price=100 reduce_only=true dry',
+            'close symbol=BTCUSDT action=open position_side=long current_qty=0 qty=1 reference_price=100 dry',
+            'close symbol=BTCUSDT action=close position_side=Merged current_qty=1 qty=1 reference_price=100 reduce_only=true dry',
         ):
-            ex.fetch_positions.return_value = rows
-            with self.subTest(rows=rows), self.assertRaises(SafetyError):
-                self.run_command(client, 'close symbol=BTCUSDT dry')
+            with self.subTest(line=line), self.assertRaises(SafetyError):
+                self.run_command(client, line)
+        ex.fetch_positions.assert_not_called()
 
     def test_leverage_dry_never_changes_either_leg_or_margin_mode(self):
         client, ex = make_client()
@@ -197,11 +197,11 @@ class CliRegressionTests(OfflineTestCase):
 
     def test_timeout_is_sanitized_and_never_automatically_retried(self):
         client, ex = make_client()
-        ex.fetch_order_book.side_effect = ccxt.RequestTimeout('SECRET_SENTINEL')
-        with patch('builtins.input', side_effect=['buy symbol=BTCUSDT qty=1 dry', 'exit']), \
+        ex.fetch_open_orders.side_effect = ccxt.RequestTimeout('SECRET_SENTINEL')
+        with patch('builtins.input', side_effect=['orders symbol=BTCUSDT', 'exit']), \
              contextlib.redirect_stdout(io.StringIO()) as output, self.assertLogs('trades') as logs:
             cli.repl(client)
-        self.assertEqual(ex.fetch_order_book.call_count, 1)
+        self.assertEqual(ex.fetch_open_orders.call_count, 1)
         self.assertNotIn('SECRET_SENTINEL', output.getvalue() + str(logs.output))
         ex.create_order.assert_not_called()
 

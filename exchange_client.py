@@ -106,6 +106,8 @@ class PhemexClient:
         symbol = self.resolve(symbol)
         price = dec("price", str(price))
         rounded = dec("normalized price", self.ex.price_to_precision(symbol, str(price)))
+        if rounded != price:
+            raise SafetyError('Requested price is off-grid; prices are not rounded')
         specs = self.instrument(symbol)
         native = self.ex.market(symbol).get('info') or {}
         for field, key in (('minPriceRp', 'min_price'), ('maxPriceRp', 'max_price')):

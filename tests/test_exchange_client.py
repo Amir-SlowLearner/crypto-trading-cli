@@ -47,7 +47,9 @@ class AdapterTests(OfflineTestCase):
         market = {**deepcopy(MARKET), 'contractSize': 2}
         client, _ = make_client(markets=[market])
         self.assertEqual(client.round_amount(SYMBOL, Decimal('0.1239')), Decimal('0.123'))
-        self.assertEqual(client.round_price(SYMBOL, Decimal('100.4')), Decimal('100'))
+        with self.assertRaisesRegex(SafetyError, 'off-grid'):
+            client.round_price(SYMBOL, Decimal('100.4'))
+        self.assertEqual(client.round_price(SYMBOL, Decimal('100')), Decimal('100'))
         self.assertEqual(client.notional(SYMBOL, Decimal('0.5'), Decimal('100')), Decimal('100'))
 
     def test_precision_receives_decimal_strings(self):
@@ -55,7 +57,8 @@ class AdapterTests(OfflineTestCase):
         ex.amount_to_precision = Mock(return_value='0.123')
         ex.price_to_precision = Mock(return_value='100')
         client.round_amount(SYMBOL, Decimal('0.123456789012345678901234567'))
-        client.round_price(SYMBOL, Decimal('100.123456789012345678901234567'))
+        with self.assertRaisesRegex(SafetyError, 'off-grid'):
+            client.round_price(SYMBOL, Decimal('100.123456789012345678901234567'))
         self.assertIsInstance(ex.amount_to_precision.call_args.args[1], str)
         self.assertEqual(ex.amount_to_precision.call_args.args[1], '0.123456789012345678901234567')
         self.assertEqual(ex.price_to_precision.call_args.args[1], '100.123456789012345678901234567')

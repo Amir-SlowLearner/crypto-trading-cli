@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "precision_mode": "tick_size",
+  "provenance": "synthetic",
+  "markets": [
+    {
+      "id": "BTCUSDT", "symbol": "BTC/USDT:USDT",
+      "swap": true, "linear": true, "settle": "USDT", "quote": "USDT", "active": true,
+      "contractSize": 1,
+      "precision": {"amount": 0.001, "price": 0.1},
+      "limits": {"amount": {"min": 0.001, "max": 100}, "price": {"min": 0.1}},
+      "info": {"status": "Listed", "qtyStepSize": "0.001", "tickSize": "0.1",
+               "maxOrderQtyRq": "100", "minOrderValueRv": "1", "minPriceRp": "0.1"}
+    }
+  ]
+}

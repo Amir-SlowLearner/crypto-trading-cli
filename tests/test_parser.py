@@ -5,12 +5,12 @@ from tests.helpers import OfflineTestCase
 class ParserTests(OfflineTestCase):
     def test_valid_commands(self):
         examples = [
-            'buy symbol=BTCUSDT qty=0.002 dry',
-            'SELL symbol=ETHUSDT usdt=50 price=2000 type=LIMIT position=short dry',
-            'buy symbol=SOLUSDT qty=1 sl=100 tp=200 cl_id=valid-id dry',
+            'buy symbol=BTCUSDT qty=0.002 action=open position_side=long current_qty=0 reference_price=60000 dry',
+            'SELL symbol=ETHUSDT usdt=50 price=2000 type=LIMIT action=open position_side=short current_qty=0 dry',
+            'buy symbol=SOLUSDT qty=1 sl=100 tp=200 cl_id=valid-id action=open position_side=long current_qty=0 reference_price=150 trigger=mark trigger_price=150 dry',
             'amend symbol=XRPUSDT ord_id=order-1 qty=20 dry',
             'cancel symbol=BTCUSDT cl_id=client-1 dry',
-            'cancelall symbol=BTCUSDT dry', 'close symbol=BTCUSDT position=long dry',
+            'cancelall symbol=BTCUSDT dry', 'close symbol=BTCUSDT action=close position_side=long current_qty=1 qty=1 reduce_only=true reference_price=100 dry',
             'leverage symbol=BTCUSDT x=2 dry', 'positions', 'positions symbol=BTCUSDT',
             'orders symbol=BTCUSDT', 'info symbol=BTCUSDT', 'balance', 'help', 'exit', 'quit',
             'account', 'modes', 'modes symbol=ETHUSDT',
@@ -45,6 +45,8 @@ class ParserTests(OfflineTestCase):
             'buy symbol=BTCUSDT qty=1 cl_id=unsafe/id',
         ]
         for line in examples:
+            if line.split()[:1] == ['buy']:
+                line += ' action=open position_side=long current_qty=0'
             with self.subTest(line=line), self.assertRaises(CommandError): parse(line.split())
 
     def test_all_numeric_fields_require_finite_positive_values(self):
@@ -53,6 +55,7 @@ class ParserTests(OfflineTestCase):
                 if name == 'x': line = f'leverage symbol=BTCUSDT x={value}'
                 elif name in {'qty', 'usdt'}: line = f'buy symbol=BTCUSDT {name}={value}'
                 else: line = f'buy symbol=BTCUSDT qty=1 {name}={value}'
+                if name != 'x': line += ' action=open position_side=long current_qty=0'
                 with self.subTest(name=name, value=value), self.assertRaises(CommandError): parse(line.split())
 
     def test_every_schema_rejects_unknown_arguments_and_flags(self):

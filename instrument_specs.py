@@ -1,8 +1,28 @@
 """Instrument inspection, including native metadata lost by pinned CCXT parsing."""
+from decimal import DecimalException, Inexact, Rounded, localcontext
+
 import ccxt
 
 from account_discovery import choice, contract_size_fact, derived, number, reported, unknown
 from safety import SafetyError
+
+
+def _quantity_conversion(left, right, source, *, divide=False):
+    """Derive quantity facts exactly, without using the caller's Decimal precision."""
+    if left is None or right is None:
+        return unknown('quantity conversion input unavailable', source)
+    if any(len(value.as_tuple().digits) > 40 or abs(value.adjusted()) > 40
+           for value in (left, right)):
+        return unknown('quantity conversion exceeds supported arithmetic precision', source)
+    try:
+        with localcontext() as context:
+            context.prec = 100
+            context.traps[Inexact] = True
+            context.traps[Rounded] = True
+            value = left / right if divide else left * right
+        return derived(value, source)
+    except DecimalException:
+        return unknown('inexact or invalid quantity conversion', source)
 
 
 def inspect_instrument(exchange, raw):
@@ -19,7 +39,9 @@ def inspect_instrument(exchange, raw):
     precision = market.get('precision') or {}
     source = 'CCXT market.info'
     fields = {
+        'id': reported(market['id'], 'CCXT market'),
         'symbol': reported(market['symbol'], 'CCXT market'),
+        'market_type': reported('linear_perpetual', 'CCXT market'),
         'settlement': reported('USDT', 'CCXT market'),
         'contract_size': contract_size_fact(market),
         'status': choice(raw_info, 'status', {'Listed': 'listed', 'Delisted': 'delisted'}, source),
@@ -31,6 +53,8 @@ def inspect_instrument(exchange, raw):
     if fields['status'].value and fields['active'].value is not None:
         if (fields['status'].value == 'listed') != fields['active'].value:
             fields['active'] = unknown('inconsistent native and normalized listing status')
+    if raw_info.get('status') is not None and fields['status'].value is None:
+        fields['active'] = unknown('unsupported native listing status')
     for key, native, fallback, fallback_name in (
         ('quantity_step', 'qtyStepSize', {}, ''),
         ('price_tick', 'tickSize', precision, 'price'),
@@ -49,19 +73,21 @@ def inspect_instrument(exchange, raw):
     size = fields['contract_size'].value
     maximum = fields['max_base_quantity'].value
     if raw_info.get('maxOrderQtyRq') is not None:
-        fields['max_contracts'] = (derived(maximum / size, 'maxOrderQtyRq / contractSize')
-                                   if maximum is not None and size is not None else
-                                   unknown('native amount limit invalid or contract size unknown'))
+        fields['max_contracts'] = _quantity_conversion(maximum, size, 'maxOrderQtyRq / contractSize', divide=True)
     else:
         fields['max_contracts'] = number(limits.get('amount') or {}, 'max', 'CCXT amount limit', positive=True)
     fields['min_contracts'] = number(limits.get('amount') or {}, 'min', 'CCXT amount limit', positive=True)
+    # Preparation checks both native base-quantity grids and CCXT contract grids.
+    # The pinned Phemex adapter uses TICK_SIZE; other modes are not guessed.
+    for key, native in (('contract_step', 'amount'), ('price_precision_tick', 'price')):
+        fields[key] = (number(precision, native, 'CCXT precision tick', positive=True)
+                       if exchange.precisionMode == ccxt.TICK_SIZE else
+                       unknown('unsupported precision mode for offline preparation'))
     minimum = fields['min_contracts'].value
-    fields['min_base_quantity'] = (derived(minimum * size, 'CCXT minimum contracts * contractSize')
-                                    if minimum is not None and size is not None else unknown())
+    fields['min_base_quantity'] = _quantity_conversion(minimum, size, 'CCXT minimum contracts * contractSize')
     if raw_info.get('qtyStepSize') is None and exchange.precisionMode == ccxt.TICK_SIZE:
         step = number(precision, 'amount', 'CCXT amount precision', positive=True)
-        fields['quantity_step'] = (derived(step.value * size, 'CCXT amount tick * contractSize')
-                                   if step.value is not None and size is not None else unknown())
+        fields['quantity_step'] = _quantity_conversion(step.value, size, 'CCXT amount tick * contractSize')
     fields['max_notional'] = (unknown('pinned CCXT maps legacy maxOrderQty into cost.max; units unverified')
                               if raw_info.get('maxOrderQty') is not None else
                               number(limits.get('cost') or {}, 'max', 'CCXT cost limit', positive=True))

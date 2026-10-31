@@ -1,6 +1,10 @@
-# Phemex trading CLI — read-only account discovery
+# Phemex trading CLI — offline order preparation
 
-This is the second implementation increment, **not a completed trading application**.
+This is the third implementation increment, **not a completed trading application**.
+Offline order preparation supports explicit Hedge Mode scenarios using cached
+instrument data and unverified user-supplied position context. See
+[order preparation](docs/order-preparation.md) for exact rules, limitations and
+credential-free manual examples. No execution is enabled.
 Read-only account discovery is implemented and tested offline. A user-run testnet
 check verified authentication, BTCUSDT position discovery and the updated configured
 leverage after a website change from 10x to 15x. Both UTA risk reads returned HTTP
@@ -73,12 +77,12 @@ modes [symbol=BTCUSDT]
 positions [symbol=BTCUSDT]
 info symbol=BTCUSDT
 orders symbol=BTCUSDT
-buy symbol=BTCUSDT usdt=100 price=64000 sl=60000 tp=70000 dry
-sell symbol=ETHUSDT qty=0.02 dry
+buy symbol=BTCUSDT action=open position_side=long current_qty=0 usdt=100 price=64000 dry
+sell symbol=ETHUSDT action=open position_side=short current_qty=0 qty=0.02 reference_price=2000 dry
 amend symbol=BTCUSDT ord_id=EXCHANGE_ID qty=0.002 dry
 cancel symbol=BTCUSDT cl_id=CLIENT_ID dry
 cancelall symbol=BTCUSDT dry
-close symbol=BTCUSDT [position=Long|Short] dry
+close symbol=BTCUSDT action=close position_side=long current_qty=0.002 qty=0.002 reference_price=64000 reduce_only=true dry
 leverage symbol=BTCUSDT x=2 dry
 help
 exit
@@ -86,15 +90,22 @@ exit
 
 Use exactly one of `qty` and `usdt` for a new order. `qty` is base-asset quantity,
 converted through contract size; amendment `qty` is the new total base quantity,
-including any fills. Prices and quantities normalize using CCXT instrument rules
-before validation and preview. A price implies a limit order; market orders cannot
-include a price. New-order previews describe opening intent; reductions must use
-`close`. `Merged` entry previews are unavailable pending account-mode discovery.
+including any fills. Prices must be exactly on-grid; quantity normalization may
+only decrease the requested amount and is shown explicitly. A price implies a
+limit order; market orders cannot include a price. `action=open|increase|reduce|close`,
+`position_side=long|short` and `current_qty=` are mandatory for order preparation.
+Buy/sell alone never selects intent or a leg. `Merged`/one-way scenarios are not
+supported. Market preparation requires a supplied unverified `reference_price=`
+and never fetches a quote. TP/SL attachment previews support open only, with explicit
+`trigger=mark|last` and `trigger_price=`.
 
-`close` currently previews a **full** reduce-only close using the position's explicit
-exchange side/mode. Partial-close quantities are rejected rather than ignored.
+`close` is a full-close scenario alias using supplied context with no account lookup.
+Its quantity must equal `current_qty`; partial reductions use `buy`/`sell action=reduce`
+with a strictly smaller quantity. Both require explicit `reduce_only=true`. Context
+is never treated as an authenticated position.
 Unsupported commands, unknown/duplicate parameters, unknown/repeated flags, empty
-values and non-finite/non-positive numeric input are rejected. Only one order ID
+values and non-finite/non-positive numeric input are rejected (`current_qty=0` is
+required for open and allowed only there). Only one order ID
 may be supplied. Every mutation command requires `dry` in this increment.
 
 Previews are not reserved orders or a statement that execution is safe. Quotes can
@@ -128,12 +139,12 @@ A passing suite and partial testnet discovery do not establish production readin
 | Review finding | Foundation treatment |
 | --- | --- |
 | Config limits loaded before the profile | Fixed with isolated configuration loading and validation |
-| Unknown, duplicate or ignored CLI input | Rejected by command schemas; partial-close input is rejected |
+| Unknown, duplicate or ignored CLI input | Rejected by command schemas; explicit action/leg/context required; reduce and full close are distinct |
 | Quantity-only amendment bypasses cap | Complete resulting notional is checked; filled quantity is checked |
-| SL/TP validation precedes rounding | Normalization precedes validation and display; ordinary amendment attachments checked |
+| SL/TP validation precedes rounding | Off-grid prices rejected; TP/SL opening direction checked against supplied entry and trigger references |
 | Spot/inverse symbols enter USDT-only path | Unsupported, inactive, ambiguous and invalid-contract markets rejected |
 | Fixed precision and float conversion | Instrument precision helpers receive decimal strings; contract size included |
-| Position side guessed from trade direction | Missing/invalid exchange side is rejected; close preview preserves Merged |
+| Position side guessed from trade direction | Order scenarios require explicit Long/Short Hedge Mode legs; one-way/Merged preparation is unsupported |
 | Timestamp client-ID collisions | UUID-based proposed IDs; durable reservation remains pending |
 | Dry leverage unexpectedly mutates | Dry preview only; CLI and adapter mutation barriers tested |
 | Incomplete cancel-all, unsafe leverage/margin assumptions | Mutations blocked, not implemented as working lifecycle operations |
@@ -141,7 +152,7 @@ A passing suite and partial testnet discovery do not establish production readin
 | Native client no timeout/API-error check or correct USDT balance query | Read timeout/error handling and balance query fixed; legacy writes blocked |
 | Old terminal starts on import / API error appears as empty orders | Old terminal consolidated; imports inert; exchange errors reported as unverified |
 
-## Read-only discovery and next increment
+## Read-only discovery and future scope
 
 `account`, `balance`, `positions` and `modes` now use fresh authenticated discovery
 with explicit reported/derived/unknown fields. Risk-unit equity and available-margin
@@ -151,7 +162,8 @@ or conflicting account fields never default to Classic/isolated/one-way settings
 blocked by application and transport guards. See [the detailed field table and
 optional testnet integration check](docs/account-discovery.md).
 
-The recommended next increment is a durable operation-intent journal, reconciliation
+Increment three adds [offline preparation](docs/order-preparation.md); no execution
+or account mutation is authorized. A future increment may add a durable operation-intent journal, reconciliation
 and restart recovery, using fresh validated account state and position-aware risk
 checks. The unresolved accounting/risk-unit discovery must first be addressed and
 verified with separate authorization. Unsupported/ambiguous account states must block trading; the

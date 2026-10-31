@@ -1,5 +1,6 @@
 from copy import deepcopy
-from decimal import Decimal
+from decimal import Decimal, localcontext
+from fractions import Fraction
 
 import ccxt
 
@@ -8,6 +9,43 @@ from tests.helpers import MARKET, SYMBOL, OfflineTestCase, make_client
 
 
 class InstrumentTests(OfflineTestCase):
+    def test_native_maximum_conversion_preserves_precision_independent_of_caller(self):
+        maximum = Decimal('0.99999999999999999999999999999')
+        for precision in (6, 28):
+            for size in (1, 2):
+                market = deepcopy(MARKET)
+                market['contractSize'] = size
+                market['info'] = {'maxOrderQtyRq': str(maximum)}
+                client, _ = make_client(markets=[market])
+                with self.subTest(precision=precision, size=size), localcontext() as context:
+                    context.prec = precision
+                    fields = client.instrument(SYMBOL)
+                    self.assertEqual(fields['max_base_quantity'].value, maximum)
+                    self.assertEqual(Fraction(fields['max_contracts'].value), Fraction(maximum) / size)
+
+    def test_derived_base_minimum_and_step_are_exact(self):
+        market = deepcopy(MARKET)
+        market['contractSize'] = Decimal('1.00000000000000000000000000001')
+        client, _ = make_client(markets=[market])
+        with localcontext() as context:
+            context.prec = 6
+            fields = client.instrument(SYMBOL)
+        for key in ('min_base_quantity', 'quantity_step'):
+            with self.subTest(key=key):
+                self.assertEqual(Fraction(fields[key].value),
+                                 Fraction(Decimal('0.001')) * Fraction(market['contractSize']))
+
+    def test_inexact_or_excessive_native_maximum_conversion_is_unknown(self):
+        for maximum, size in (('1', 3), ('1e100000', 1)):
+            market = deepcopy(MARKET)
+            market['contractSize'] = size
+            market['info'] = {'maxOrderQtyRq': maximum}
+            client, _ = make_client(markets=[market])
+            with self.subTest(maximum=maximum, size=size):
+                fields = client.instrument(SYMBOL)
+                self.assertEqual(fields['max_base_quantity'].value, Decimal(maximum))
+                self.assertIsNone(fields['max_contracts'].value)
+
     def test_native_usdt_limits_omitted_by_ccxt_are_exposed_and_used(self):
         market = deepcopy(MARKET)
         market['info'] = {'status': 'Listed', 'maxOrderQtyRq': '2', 'minOrderValueRv': '10',

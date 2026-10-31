@@ -8,17 +8,21 @@ Commands:
   account | balance | modes [symbol=BTCUSDT]
   positions [symbol=BTCUSDT] | info symbol=BTCUSDT
   orders symbol=BTCUSDT
-  buy|sell symbol=BTCUSDT qty=0.002|usdt=100 [price=64000] [sl=60000]
-           [tp=70000] [position=Long|Short] [type=market|limit] [cl_id=ID] dry
+  buy|sell symbol=BTCUSDT action=open|increase|reduce|close position_side=long|short
+           current_qty=0 qty=0.002|usdt=100 [price=64000] [type=market|limit]
+           [reference_price=64000] [reduce_only=true|false] [cl_id=ID] dry
+           [sl=60000] [tp=70000] [trigger=mark|last trigger_price=64000]
   amend symbol=BTCUSDT cl_id=ID|ord_id=ID [price=64000] [qty=0.002] dry
   cancel symbol=BTCUSDT cl_id=ID|ord_id=ID dry
   cancelall symbol=BTCUSDT dry
-  close symbol=BTCUSDT [position=Long|Short] dry
+  close symbol=BTCUSDT action=close position_side=long|short current_qty=0.002
+           qty=0.002 reference_price=64000 reduce_only=true dry
   leverage symbol=BTCUSDT x=5 dry
   help | exit | quit
 
 qty is base-asset quantity; amendment qty is the new total including fills.
-Close currently previews a full reduction only; partial-close arguments are rejected.
+current_qty and all price references are supplied, unverified scenario inputs.
+Market preparation requires reference_price; TP/SL attachment previews support open only.
 Account discovery is read-only and scoped; successful discovery does not establish
 trading safety. Previews do not verify aggregate exposure or protection coverage.
 """
@@ -27,11 +31,11 @@ from decimal import Decimal
 import logging
 from pathlib import Path
 import sys
-from uuid import uuid4
 
 from command_parser import CommandError, dec, parse
 from config import ConfigError, load_settings
 from safety import SafetyError, reject_mutation
+from order_preparation import check_sl_tp, prepare_order, render_preparation
 
 try:
     import readline  # noqa: F401
@@ -44,22 +48,6 @@ log = logging.getLogger("trades")
 def preview_only(flags):
     if "dry" not in flags:
         reject_mutation()
-
-
-def check_sl_tp(side, pos_side, ref_price, sl, tp):
-    opening = (side, pos_side) in {("buy", "Long"), ("sell", "Short")}
-    if not opening:
-        raise CommandError("Order previews support opening intent only; use close for reductions")
-    if pos_side == "Long":
-        if sl is not None and sl >= ref_price:
-            raise CommandError("Normalized long stop-loss must be below the reference price")
-        if tp is not None and tp <= ref_price:
-            raise CommandError("Normalized long take-profit must be above the reference price")
-    else:
-        if sl is not None and sl <= ref_price:
-            raise CommandError("Normalized short stop-loss must be above the reference price")
-        if tp is not None and tp >= ref_price:
-            raise CommandError("Normalized short take-profit must be below the reference price")
 
 
 def check_cap(client, notional):
@@ -83,27 +71,16 @@ def print_order(order):
 
 
 def cmd_order(client, parts, side):
+    # Preserve the unconditional barrier before inspecting metadata or account state.
+    if 'dry' not in {token.lower() for token in parts[1:]}:
+        reject_mutation()
     args, flags = parse(parts)
     preview_only(flags)
-    symbol = client.resolve(args["symbol"])
-    pos_side = args.get("position", "Long" if side == "buy" else "Short")
-    price = client.round_price(symbol, dec("price", args["price"])) if "price" in args else None
-    sl = client.round_price(symbol, dec("sl", args["sl"])) if "sl" in args else None
-    tp = client.round_price(symbol, dec("tp", args["tp"])) if "tp" in args else None
-    ref = price if price is not None else client.best_price(symbol, side)
-    base_amount = dec("qty", args["qty"]) if "qty" in args else dec("usdt", args["usdt"]) / ref
-    amount = client.round_amount(symbol, base_amount / client.contract_size(symbol))
-    notional = client.notional(symbol, amount, ref)
-    check_cap(client, notional)
-    check_sl_tp(side, pos_side, ref, sl, tp)
-    cl_id = args.get("cl_id") or uuid4().hex
-    print(f"ORDER PREVIEW [{'LIVE' if client.live else 'TESTNET'}]")
-    print(f"  {side.upper()} opening intent={pos_side} {symbol} ({args['type']})")
-    print(f"  contracts: {amount}; base quantity: {amount * client.contract_size(symbol)}")
-    print(f"  price: {price if price is not None else f'market estimate (~{ref})'}")
-    print(f"  notional: ~{notional} USDT; SL / TP: {sl} / {tp}")
-    print(f"  proposed cl_id: {cl_id} (not reserved)")
-    print("DRY RUN: no submission. Account mode and aggregate exposure are unverified.")
+    if parts[0].lower() not in {side, 'close'}:
+        raise CommandError('Order direction dispatch mismatch')
+    order = prepare_order(client.instrument(args['symbol']), parts, client.limits)
+    print('Instrument metadata: ' + getattr(client, 'metadata_provenance', 'cached session data; freshness unverified'))
+    print(render_preparation(order))
 
 
 def cmd_buy(client, parts):
@@ -277,32 +254,8 @@ def cmd_modes(client, parts):
 
 
 def cmd_close(client, parts):
-    args, flags = parse(parts)
-    preview_only(flags)
-    symbol = client.resolve(args["symbol"])
-    rows = client.positions(symbol)
-    if "position" in args:
-        rows = [p for p in rows if str(p.get("side")).lower() == args["position"].lower()]
-    if not rows:
-        raise CommandError("No matching nonzero position returned")
-    if len(rows) != 1:
-        raise CommandError("Multiple positions; specify position=Long or position=Short")
-    position = rows[0]
-    direction = position.get("side")
-    if direction not in {"long", "short"}:
-        raise CommandError("Position direction is missing or invalid")
-    pos_side = client.order_pos_side(position)
-    mode = (position.get("info") or {}).get("posMode")
-    expected = "Long" if direction == "long" else "Short"
-    if (mode, pos_side) not in {("OneWay", "Merged"), ("Hedged", expected)}:
-        raise CommandError("Position mode and side are missing or inconsistent")
-    amount = dec("position quantity", str(position.get("contracts")))
-    if client.round_amount(symbol, amount) != amount:
-        raise CommandError("Position quantity is not exactly representable; manual review required")
-    side = "sell" if direction == "long" else "buy"
-    print(f"DRY RUN: full CLOSE {direction} {symbol}; {side} {amount} contracts at market")
-    print(f"posSide={pos_side}; posMode={mode}; reduceOnly=true; nothing submitted.")
-    print("Position freshness and remaining orders/protection require reconciliation.")
+    # Direction follows explicit close intent and leg, never an account lookup.
+    cmd_order(client, parts, 'close')
 
 
 def cmd_info(client, parts):
@@ -362,7 +315,28 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter, allow_abbrev=False)
     parser.add_argument("--live", action="store_true", help="connect to live endpoints in read-only mode")
     parser.add_argument("--env-file", type=Path, help="explicit profile file (default: project test.env/live.env)")
+    parser.add_argument('--preview', help='one dry buy/sell/close scenario using only --market-cache')
+    parser.add_argument('--market-cache', type=Path, help='cached public instrument specifications (JSON)')
     options = parser.parse_args(argv)
+    if options.preview is not None or options.market_cache is not None:
+        if options.preview is None or options.market_cache is None or options.live or options.env_file is not None:
+            parser.error('--preview requires --market-cache and cannot use --live or --env-file')
+        try:
+            parts = options.preview.split()
+            if not parts or parts[0].lower() not in {'buy', 'sell', 'close'}:
+                raise CommandError('Offline preview accepts only buy, sell or close')
+            args, flags = parse(parts)
+            preview_only(flags)
+            from market_cache import load_market_cache
+            client = load_market_cache(options.market_cache)
+            COMMANDS[parts[0].lower()](client, parts)
+            return 0
+        except SafetyError as error:
+            print(f'ERROR: {error}', file=sys.stderr)
+            return 2
+        except Exception as error:
+            report_exchange_error(error)
+            return 2
     try:
         settings = load_settings(live=options.live, env_file=options.env_file)
         if settings.live:
