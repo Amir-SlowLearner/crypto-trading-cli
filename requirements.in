@@ -1,0 +1,4 @@
+# Deliberate direct version pins; requirements.txt pins the runtime closure.
+ccxt==4.5.90
+python-dotenv==1.2.4
+requests==2.34.2

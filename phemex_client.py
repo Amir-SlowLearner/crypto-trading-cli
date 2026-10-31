@@ -1,9 +1,12 @@
+"""Legacy native reference client. Mutations are disabled; use trade_cli.py."""
 import time
 import hmac
 import hashlib
 import json
 import requests
 from urllib.parse import urlencode
+
+from safety import SafetyError, reject_mutation
 
 
 
@@ -33,6 +36,8 @@ class PhemexClient:
 
 
     def _request(self, method, endpoint, body=None, params=None):
+        if method.upper() != "GET":
+            reject_mutation()
 
         # -----------------------
         # QUERY STRING (SAFE)
@@ -83,24 +88,19 @@ class PhemexClient:
         # -----------------------
         # SEND REQUEST
         # -----------------------
-        method = method.upper()
-
-        if method == "POST":
-            response = requests.post(url, data=body_json, headers=headers)
-
-        elif method == "PUT":
-            response = requests.put(url, data=body_json, headers=headers)
-
-        elif method == "GET":
-            response = requests.get(url, headers=headers)
-
-        elif method == "DELETE":
-            response = requests.delete(url, headers=headers)
-
-        else:
-            raise ValueError(f"Unsupported method: {method}")
-
-        return response.json()
+        try:
+            response = requests.get(url, headers=headers, timeout=15, allow_redirects=False)
+            response.raise_for_status()
+            if response.status_code != 200:
+                raise SafetyError("Legacy read returned an unexpected HTTP status")
+            result = response.json()
+        except (requests.RequestException, ValueError):
+            raise SafetyError("Legacy read failed; exchange state is unverified") from None
+        if not isinstance(result, dict):
+            raise SafetyError("Legacy read returned an invalid response")
+        if result.get("code", 0) not in (0, "0") or result.get("error"):
+            raise SafetyError("Legacy read returned an exchange error")
+        return result
 
     
     
@@ -253,12 +253,8 @@ class PhemexClient:
 
 
     def get_balance(self, currency="USDT"):
-        params = {
-        "currency": currency.upper()
-    }
-        
+        if currency.upper() != "USDT":
+            raise SafetyError("Legacy balance support is restricted to USDT")
         return self._request(
-            "GET",
-            "/accounts/accountPositions",  # or your Phemex endpoint
-            params={}
+            "GET", "/g-accounts/accountPositions", params={"currency": "USDT"}
         )

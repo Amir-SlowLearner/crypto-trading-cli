@@ -1,167 +1,107 @@
-"""Phemex trading CLI (USDT perpetuals, hedged mode).
+"""Phemex CLI foundation: read-only commands and dry previews.
 
-Run on testnet (default):   python trade_cli.py
-Run on mainnet (explicit):  python trade_cli.py --live
+Run: python trade_cli.py [--env-file PATH]
+Live connectivity additionally requires --live, PHEMEX_ALLOW_LIVE=true, and LIVE
+confirmation. All exchange mutations are disabled in this increment.
 
-Examples:
-  leverage symbol=BTCUSDT x=5
-  buy  symbol=BTCUSDT usdt=100 sl=60000 tp=70000
-  buy  symbol=BTCUSDT qty=0.002 price=64000          (limit)
-  sell symbol=ETHUSDT usdt=50 dry                    (dry run, nothing sent)
-  positions | balance | orders symbol=BTCUSDT
-  close symbol=BTCUSDT [position=Long]
+Commands:
+  balance | positions [symbol=BTCUSDT] | info symbol=BTCUSDT
+  orders symbol=BTCUSDT
+  buy|sell symbol=BTCUSDT qty=0.002|usdt=100 [price=64000] [sl=60000]
+           [tp=70000] [position=Long|Short] [type=market|limit] [cl_id=ID] dry
+  amend symbol=BTCUSDT cl_id=ID|ord_id=ID [price=64000] [qty=0.002] dry
+  cancel symbol=BTCUSDT cl_id=ID|ord_id=ID dry
+  cancelall symbol=BTCUSDT dry
+  close symbol=BTCUSDT [position=Long|Short] dry
+  leverage symbol=BTCUSDT x=5 dry
+  help | exit | quit
+
+qty is base-asset quantity; amendment qty is the new total including fills.
+Close currently previews a full reduction only; partial-close arguments are rejected.
+Previews do not verify account mode, aggregate exposure or protection coverage.
 """
+import argparse
+from decimal import Decimal
 import logging
-import os
+from pathlib import Path
 import sys
-import time
-from decimal import Decimal, InvalidOperation
+from uuid import uuid4
 
-from dotenv import load_dotenv
+from command_parser import CommandError, dec, parse
+from config import ConfigError, load_settings
+from safety import SafetyError, reject_mutation
 
-try:  # command history + arrow keys on Linux
+try:
     import readline  # noqa: F401
 except ImportError:
     pass
 
-MAX_NOTIONAL_USDT = Decimal(os.getenv("MAX_NOTIONAL_USDT", "200"))
-MAX_LEVERAGE = Decimal(os.getenv("MAX_LEVERAGE", "5"))
-
 log = logging.getLogger("trades")
 
 
-class CommandError(Exception):
-    pass
-
-
-# ----------------------------------------------------------------------
-# helpers
-# ----------------------------------------------------------------------
-def parse(parts):
-    """'buy symbol=BTCUSDT usdt=100 dry' -> ({'symbol': 'BTCUSDT', 'usdt': '100'}, {'dry'})"""
-    args, flags = {}, set()
-    for p in parts[1:]:
-        if "=" in p:
-            k, v = p.split("=", 1)
-            args[k.lower()] = v
-        else:
-            flags.add(p.lower())
-    return args, flags
-
-
-def dec(name, value):
-    try:
-        d = Decimal(value)
-    except (InvalidOperation, TypeError):
-        raise CommandError(f"{name} must be a number, got '{value}'")
-    if not d.is_finite() or d <= 0:
-        raise CommandError(f"{name} must be greater than 0, got '{value}'")
-    return d
-
-
-def confirm(prompt="Send? [y/N] "):
-    return input(prompt).strip().lower() == "y"
-
-
-def is_opening(side, pos_side):
-    return (side == "buy" and pos_side == "Long") or (side == "sell" and pos_side == "Short")
+def preview_only(flags):
+    if "dry" not in flags:
+        reject_mutation()
 
 
 def check_sl_tp(side, pos_side, ref_price, sl, tp):
-    """Catch inverted stops before they reach the exchange (opening orders only)."""
-    if not is_opening(side, pos_side):
-        return
+    opening = (side, pos_side) in {("buy", "Long"), ("sell", "Short")}
+    if not opening:
+        raise CommandError("Order previews support opening intent only; use close for reductions")
     if pos_side == "Long":
         if sl is not None and sl >= ref_price:
-            raise CommandError(f"Long stop-loss {sl} must be below price {ref_price}")
+            raise CommandError("Normalized long stop-loss must be below the reference price")
         if tp is not None and tp <= ref_price:
-            raise CommandError(f"Long take-profit {tp} must be above price {ref_price}")
+            raise CommandError("Normalized long take-profit must be above the reference price")
     else:
         if sl is not None and sl <= ref_price:
-            raise CommandError(f"Short stop-loss {sl} must be above price {ref_price}")
+            raise CommandError("Normalized short stop-loss must be above the reference price")
         if tp is not None and tp >= ref_price:
-            raise CommandError(f"Short take-profit {tp} must be below price {ref_price}")
+            raise CommandError("Normalized short take-profit must be below the reference price")
 
 
-def print_order(o):
-    info = o.get("info") or {}
+def check_cap(client, notional):
+    if notional > client.limits.max_notional_usdt:
+        raise CommandError("Notional exceeds MAX_NOTIONAL_USDT")
+
+
+def print_order(order):
+    info = order.get("info") or {}
+    for label, value in (
+        ("ID", order.get("id")), ("ClientID", order.get("clientOrderId")),
+        ("Symbol", order.get("symbol")), ("Side", order.get("side")),
+        ("Position", info.get("posSide", "unverified")),
+        ("Type", order.get("type")), ("Price", order.get("price")),
+        ("Amount", order.get("amount")), ("Filled", order.get("filled")),
+        ("Status", order.get("status")),
+        ("SL / TP", f"{info.get('stopLossRp')} / {info.get('takeProfitRp')}"),
+    ):
+        print(f"{label:10}: {value}")
     print("-" * 40)
-    print(f"ID      : {o.get('id')}")
-    print(f"ClientID: {o.get('clientOrderId')}")
-    print(f"Symbol  : {o.get('symbol')}")
-    print(f"Side    : {o.get('side')} ({info.get('posSide', '?')})")
-    print(f"Type    : {o.get('type')}")
-    print(f"Price   : {o.get('price')}")
-    print(f"Amount  : {o.get('amount')}   filled: {o.get('filled')}")
-    print(f"Status  : {o.get('status')}")
-    print(f"SL / TP : {info.get('stopLossRp')} / {info.get('takeProfitRp')}")
-    print("-" * 40)
 
 
-# ----------------------------------------------------------------------
-# commands
-# ----------------------------------------------------------------------
 def cmd_order(client, parts, side):
     args, flags = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
-
-    qty_raw, usdt_raw, price_raw = args.get("qty"), args.get("usdt"), args.get("price")
-    if bool(qty_raw) == bool(usdt_raw):
-        raise CommandError("Give exactly one of qty= (base units) or usdt= (position size in USDT)")
-
-    ord_type = (args.get("type") or ("limit" if price_raw else "market")).lower()
-    if ord_type not in ("limit", "market"):
-        raise CommandError("type must be limit or market")
-    if ord_type == "limit" and not price_raw:
-        raise CommandError("Limit order requires price=")
-    if ord_type == "market" and price_raw:
-        raise CommandError("Market order must not include price=")
-
-    pos_side = args.get("position", "Long" if side == "buy" else "Short").capitalize()
-    if pos_side not in ("Long", "Short", "Merged"):
-        raise CommandError("position must be Long, Short or Merged")
-
-    price = dec("price", price_raw) if price_raw else None
-    sl = dec("sl", args["sl"]) if args.get("sl") else None
-    tp = dec("tp", args["tp"]) if args.get("tp") else None
-
-    ref_price = price if price is not None else client.best_price(symbol, side)
-    amount = dec("qty", qty_raw) if qty_raw else dec("usdt", usdt_raw) / ref_price
-    amount = client.round_amount(symbol, amount)
-    notional = amount * ref_price
-
-    if notional > MAX_NOTIONAL_USDT:
-        raise CommandError(
-            f"Notional {notional:.2f} USDT exceeds MAX_NOTIONAL_USDT={MAX_NOTIONAL_USDT}"
-        )
-    check_sl_tp(side, pos_side, ref_price, sl, tp)
-
-    cl_id = args.get("cl_id") or f"{client.market_id(symbol)}_{side}_{int(time.time())}"
-    if len(cl_id) > 40:
-        raise CommandError("cl_id too long (max 40)")
-
-    print("\nORDER PREVIEW")
-    print(f"  {side.upper()} {pos_side}  {symbol}  ({ord_type})")
-    print(f"  amount  : {amount}")
-    print(f"  price   : {price if price is not None else f'market (~{ref_price})'}")
-    print(f"  notional: ~{notional:.2f} USDT")
-    print(f"  SL / TP : {sl} / {tp}")
-    print(f"  cl_id   : {cl_id}")
-    print(f"  env     : {'LIVE' if client.live else 'TESTNET'}")
-
-    if "dry" in flags:
-        print("DRY RUN - nothing sent.")
-        return
-    if not confirm():
-        print("Cancelled.")
-        return
-
-    log.info("SEND %s %s %s %s amount=%s price=%s sl=%s tp=%s cl_id=%s",
-             "LIVE" if client.live else "TEST", side, pos_side, symbol, amount, price, sl, tp, cl_id)
-    result = client.place_order(symbol, side, pos_side, ord_type, amount,
-                                price=price, sl=sl, tp=tp, cl_id=cl_id)
-    log.info("RESULT %s", result.get("info") or result)
-    print_order(result)
+    preview_only(flags)
+    symbol = client.resolve(args["symbol"])
+    pos_side = args.get("position", "Long" if side == "buy" else "Short")
+    price = client.round_price(symbol, dec("price", args["price"])) if "price" in args else None
+    sl = client.round_price(symbol, dec("sl", args["sl"])) if "sl" in args else None
+    tp = client.round_price(symbol, dec("tp", args["tp"])) if "tp" in args else None
+    ref = price if price is not None else client.best_price(symbol, side)
+    base_amount = dec("qty", args["qty"]) if "qty" in args else dec("usdt", args["usdt"]) / ref
+    amount = client.round_amount(symbol, base_amount / client.contract_size(symbol))
+    notional = client.notional(symbol, amount, ref)
+    check_cap(client, notional)
+    check_sl_tp(side, pos_side, ref, sl, tp)
+    cl_id = args.get("cl_id") or uuid4().hex
+    print(f"ORDER PREVIEW [{'LIVE' if client.live else 'TESTNET'}]")
+    print(f"  {side.upper()} opening intent={pos_side} {symbol} ({args['type']})")
+    print(f"  contracts: {amount}; base quantity: {amount * client.contract_size(symbol)}")
+    print(f"  price: {price if price is not None else f'market estimate (~{ref})'}")
+    print(f"  notional: ~{notional} USDT; SL / TP: {sl} / {tp}")
+    print(f"  proposed cl_id: {cl_id} (not reserved)")
+    print("DRY RUN: no submission. Account mode and aggregate exposure are unverified.")
 
 
 def cmd_buy(client, parts):
@@ -174,146 +114,147 @@ def cmd_sell(client, parts):
 
 def cmd_leverage(client, parts):
     args, flags = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
-    lev = dec("x", args.get("x"))
-    if lev > MAX_LEVERAGE:
-        raise CommandError(f"Leverage {lev}x exceeds MAX_LEVERAGE={MAX_LEVERAGE}")
-    if not confirm(f"Set {symbol} leverage to {lev}x? [y/N] "):
-        print("Cancelled.")
-        return
-    log.info("LEVERAGE %s %s", symbol, lev)
-    print(client.set_leverage(symbol, lev))
+    preview_only(flags)
+    symbol = client.resolve(args["symbol"])
+    leverage = dec("x", args["x"])
+    if leverage < 1 or leverage > client.limits.max_leverage:
+        raise CommandError("Leverage must be at least 1 and no greater than MAX_LEVERAGE")
+    print(f"DRY RUN: requested leverage {leverage}x for {symbol}; nothing changed.")
+    print("Current margin/position modes and affected legs are unverified.")
 
 
 def cmd_orders(client, parts):
     args, _ = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
-    rows = client.open_orders(symbol)
+    rows = client.open_orders(client.resolve(args["symbol"]))
     if not rows:
-        print("No open orders")
-    for o in rows:
-        print_order(o)
+        print("No open orders returned by the exchange.")
+    for order in rows:
+        print_order(order)
+
+
+def find_order(client, args):
+    symbol = client.resolve(args["symbol"])
+    order = client.find_open_order(symbol, args.get("cl_id"), args.get("ord_id"))
+    if not order:
+        raise CommandError("Not found among open orders; execution status is unresolved by this lookup")
+    client.order_pos_side(order)
+    return symbol, order
 
 
 def cmd_amend(client, parts):
     args, flags = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
-    if not args.get("cl_id") and not args.get("ord_id"):
-        raise CommandError("Need cl_id= or ord_id=")
-    if not args.get("price") and not args.get("qty"):
-        raise CommandError("Nothing to amend (give price= and/or qty=)")
-    order = client.find_open_order(symbol, args.get("cl_id"), args.get("ord_id"))
-    if not order:
-        raise CommandError("Order not found among open orders")
-
-    price = dec("price", args["price"]) if args.get("price") else None
-    qty = client.round_amount(symbol, dec("qty", args["qty"])) if args.get("qty") else None
-    if price is not None and price * (qty or Decimal(str(order["amount"]))) > MAX_NOTIONAL_USDT:
-        raise CommandError(f"Amended notional exceeds MAX_NOTIONAL_USDT={MAX_NOTIONAL_USDT}")
-
-    print(f"Amend {order['id']}: price {order.get('price')} -> {price or 'same'}, "
-          f"amount {order.get('amount')} -> {qty or 'same'}")
-    if "dry" in flags:
-        print("DRY RUN - nothing sent.")
-        return
-    if not confirm("Send? [y/N] "):
-        print("Cancelled.")
-        return
-    log.info("AMEND %s price=%s qty=%s", order["id"], price, qty)
-    print_order(client.amend_order(order, price=price, amount=qty))
+    preview_only(flags)
+    symbol, order = find_order(client, args)
+    if order.get("type") != "limit":
+        raise CommandError("Only ordinary limit-order amendment previews are supported")
+    price = client.round_price(symbol, dec("price", args.get("price", str(order.get("price")))))
+    requested = (dec("qty", args["qty"]) / client.contract_size(symbol)
+                 if "qty" in args else dec("order amount", str(order.get("amount"))))
+    amount = client.round_amount(symbol, requested)
+    # Check the complete resulting order, even for quantity-only amendments.
+    notional = client.notional(symbol, amount, price)
+    check_cap(client, notional)
+    raw_filled = order.get("filled")
+    if raw_filled is None:
+        raise CommandError("Filled quantity is missing; amendment state is unverified")
+    filled = Decimal(str(raw_filled))
+    if not filled.is_finite() or filled < 0 or amount < filled:
+        raise CommandError("Amended total quantity must not be below filled quantity")
+    protection = []
+    for field in ("stopLossRp", "takeProfitRp"):
+        value = (order.get("info") or {}).get(field)
+        if value is None:
+            protection.append(None)
+        else:
+            trigger = Decimal(str(value))
+            if not trigger.is_finite() or trigger < 0:
+                raise CommandError("Existing attached protection has an invalid trigger price")
+            protection.append(None if trigger == 0 else client.round_price(symbol, trigger))
+    if any(value is not None for value in protection):
+        check_sl_tp(order.get("side"), client.order_pos_side(order), price, *protection)
+    print(f"DRY RUN: amend {order['id']} -> price={price}, total contracts={amount}, notional={notional}")
+    print("No submission. Position exposure and attached protection require reconciliation.")
 
 
 def cmd_cancel(client, parts):
-    args, _ = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
-    if not args.get("cl_id") and not args.get("ord_id"):
-        raise CommandError("Need cl_id= or ord_id=")
-    order = client.find_open_order(symbol, args.get("cl_id"), args.get("ord_id"))
-    if not order:
-        raise CommandError("Order not found among open orders")
+    args, flags = parse(parts)
+    preview_only(flags)
+    _, order = find_order(client, args)
     print_order(order)
-    if not confirm("Cancel this order? [y/N] "):
-        print("Cancelled.")
-        return
-    log.info("CANCEL %s", order["id"])
-    client.cancel_order(order)
-    print("Canceled.")
+    print("DRY RUN: cancellation preview only; the order remains on the exchange.")
 
 
 def cmd_cancelall(client, parts):
-    args, _ = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
-    if not confirm(f"Cancel ALL open orders on {symbol}? [y/N] "):
-        print("Cancelled.")
-        return
-    log.info("CANCELALL %s", symbol)
-    print(client.cancel_all(symbol))
+    args, flags = parse(parts)
+    preview_only(flags)
+    symbol = client.resolve(args["symbol"])
+    rows = client.open_orders(symbol)
+    print(f"DRY RUN: {len(rows)} open orders returned for {symbol}; nothing canceled.")
+    print("Complete cancellation must handle active AND untriggered conditional orders.")
+    print("Canceling protection can leave an open position unprotected.")
 
 
 def cmd_balance(client, parts):
-    b = client.balance()
-    print(f"USDT  free={b['free']}  used={b['used']}  total={b['total']}")
+    parse(parts)
+    balance = client.balance()
+    print(f"USDT free={balance['free']} used={balance['used']} total={balance['total']}")
+    print("Basic CCXT balance; account type, equity and available margin are unverified.")
 
 
 def cmd_positions(client, parts):
     args, _ = parse(parts)
-    symbol = client.resolve(args["symbol"]) if args.get("symbol") else None
+    symbol = client.resolve(args["symbol"]) if "symbol" in args else None
     rows = client.positions(symbol)
     if not rows:
-        print("No open positions")
+        print("No nonzero positions returned by the exchange.")
     for p in rows:
-        print("-" * 40)
-        print(f"{p.get('symbol')}  {str(p.get('side')).upper()}  contracts={p.get('contracts')}")
-        print(f"  entry={p.get('entryPrice')}  mark={p.get('markPrice')}  "
-              f"liq={p.get('liquidationPrice')}")
-        print(f"  uPnL={p.get('unrealizedPnl')}  leverage={p.get('leverage')}")
-    if rows:
-        print("-" * 40)
+        info = p.get("info") or {}
+        print(f"{p.get('symbol')} {p.get('side')} contracts={p.get('contracts')} "
+              f"posSide={info.get('posSide')} posMode={info.get('posMode')}")
+        print(f"entry={p.get('entryPrice')} mark={p.get('markPrice')} "
+              f"liq={p.get('liquidationPrice')} uPnL={p.get('unrealizedPnl')} leverage={p.get('leverage')}")
+    print("Snapshot only; accounting mode and PnL freshness are unverified.")
 
 
 def cmd_close(client, parts):
-    """Market-close a position with a reduce-only order."""
     args, flags = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
+    preview_only(flags)
+    symbol = client.resolve(args["symbol"])
     rows = client.positions(symbol)
-    want = args.get("position")
-    if want:
-        rows = [p for p in rows if str(p.get("side")).lower() == want.lower()]
+    if "position" in args:
+        rows = [p for p in rows if str(p.get("side")).lower() == args["position"].lower()]
     if not rows:
-        raise CommandError("No matching open position")
-    if len(rows) > 1:
-        raise CommandError("Multiple positions found; specify position=Long or position=Short")
-    p = rows[0]
-    pos_side = "Long" if str(p.get("side")).lower() == "long" else "Short"
-    close_side = "sell" if pos_side == "Long" else "buy"
-    amount = Decimal(str(p["contracts"]))
-
-    print(f"CLOSE {pos_side} {symbol}: {close_side.upper()} {amount} at market (reduce-only)")
-    if "dry" in flags:
-        print("DRY RUN - nothing sent.")
-        return
-    if not confirm():
-        print("Cancelled.")
-        return
-    cl_id = f"{client.market_id(symbol)}_close_{int(time.time())}"
-    log.info("CLOSE %s %s amount=%s", symbol, pos_side, amount)
-    print_order(client.place_order(symbol, close_side, pos_side, "market", amount,
-                                   cl_id=cl_id, reduce_only=True))
+        raise CommandError("No matching nonzero position returned")
+    if len(rows) != 1:
+        raise CommandError("Multiple positions; specify position=Long or position=Short")
+    position = rows[0]
+    direction = position.get("side")
+    if direction not in {"long", "short"}:
+        raise CommandError("Position direction is missing or invalid")
+    pos_side = client.order_pos_side(position)
+    mode = (position.get("info") or {}).get("posMode")
+    expected = "Long" if direction == "long" else "Short"
+    if (mode, pos_side) not in {("OneWay", "Merged"), ("Hedged", expected)}:
+        raise CommandError("Position mode and side are missing or inconsistent")
+    amount = dec("position quantity", str(position.get("contracts")))
+    if client.round_amount(symbol, amount) != amount:
+        raise CommandError("Position quantity is not exactly representable; manual review required")
+    side = "sell" if direction == "long" else "buy"
+    print(f"DRY RUN: full CLOSE {direction} {symbol}; {side} {amount} contracts at market")
+    print(f"posSide={pos_side}; posMode={mode}; reduceOnly=true; nothing submitted.")
+    print("Position freshness and remaining orders/protection require reconciliation.")
 
 
 def cmd_info(client, parts):
     args, _ = parse(parts)
-    symbol = client.resolve(args.get("symbol"))
-    for k, v in client.market_info(symbol).items():
-        print(f"{k:17}: {v}")
+    for key, value in client.market_info(client.resolve(args["symbol"])).items():
+        print(f"{key:17}: {value}")
 
 
 def cmd_help(client, parts):
+    parse(parts)
     print(__doc__)
-    print(f"Limits: MAX_NOTIONAL_USDT={MAX_NOTIONAL_USDT}  MAX_LEVERAGE={MAX_LEVERAGE}")
-    print("Commands: buy sell close leverage orders amend cancel cancelall "
-          "balance positions info help exit")
-    print("Add the word 'dry' to buy/sell/amend/close to preview without sending.")
+    print(f"Limits: MAX_NOTIONAL_USDT={client.limits.max_notional_usdt}; MAX_LEVERAGE={client.limits.max_leverage}")
 
 
 COMMANDS = {
@@ -324,61 +265,64 @@ COMMANDS = {
 }
 
 
-# ----------------------------------------------------------------------
-# main loop
-# ----------------------------------------------------------------------
+def report_exchange_error(error):
+    # Never print/log the exception message, request, response, command or traceback:
+    # upstream exceptions may contain credentials and signed request material.
+    name = type(error).__name__
+    log.error("Exchange operation failed (%s); state is unverified", name)
+    print(f"Exchange operation failed ({name}); state is unverified. No automatic retry.")
+
+
 def repl(client):
-    tag = "LIVE" if client.live else "TESTNET"
-    print(f"Connected [{tag}]. Type 'help' for commands.")
+    tag = "LIVE READ-ONLY" if client.live else "TESTNET"
+    print(f"Market metadata loaded [{tag}]. Private authentication/account modes are unverified.")
+    print("Exchange mutations are disabled. Type help for commands and dry previews.")
     while True:
         try:
             line = input(f"[{tag}]> ")
+            parts = line.split()
+            if not parts:
+                continue
+            parse(parts)  # validate exit/quit and all input before dispatch
+            if parts[0].lower() in {"exit", "quit"}:
+                return
+            COMMANDS[parts[0].lower()](client, parts)
         except EOFError:
             print()
             return
         except KeyboardInterrupt:
-            print()
-            continue
-
-        parts = line.split()
-        if not parts:
-            continue
-        cmd = parts[0].lower()
-        if cmd in ("exit", "quit"):
-            return
-        fn = COMMANDS.get(cmd)
-        if fn is None:
-            print("Unknown command. Type 'help'.")
-            continue
-        try:
-            fn(client, parts)
-        except (CommandError, ValueError) as e:
-            print("ERROR:", e)
-        except KeyboardInterrupt:
-            print("\nInterrupted.")
-        except Exception as e:  # exchange/network errors: report, keep the session alive
-            log.exception("command failed: %s", line)
-            print(f"FAILED: {type(e).__name__}: {e}")
+            print("\nInterrupted; no exchange mutation was enabled.")
+        except SafetyError as error:
+            print(f"ERROR: {error}")
+        except Exception as error:
+            report_exchange_error(error)
 
 
-def main():
-    live = "--live" in sys.argv
-    logging.basicConfig(
-        filename="trades.log", level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-    )
-    load_dotenv("live.env" if live else "test.env")
-    key, secret = os.getenv("PHEMEX_API_KEY"), os.getenv("PHEMEX_API_SECRET")
-    if not key or not secret:
-        sys.exit("Missing PHEMEX_API_KEY / PHEMEX_API_SECRET in "
-                 f"{'live.env' if live else 'test.env'}")
-    if live and input("LIVE trading with real funds. Type LIVE to continue: ") != "LIVE":
-        sys.exit("Aborted.")
-
-    from exchange_client import PhemexClient  # imported late so tests can stub it
-    client = PhemexClient(key, secret, live=live)
-    repl(client)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--live", action="store_true", help="connect to live endpoints in read-only mode")
+    parser.add_argument("--env-file", type=Path, help="explicit profile file (default: project test.env/live.env)")
+    options = parser.parse_args(argv)
+    try:
+        settings = load_settings(live=options.live, env_file=options.env_file)
+        if settings.live:
+            if input("LIVE account connectivity (mutations disabled). Type LIVE to continue: ").strip() != "LIVE":
+                print("Aborted.")
+                return 1
+        from exchange_client import PhemexClient
+        client = PhemexClient(settings.api_key, settings.api_secret, live=settings.live, limits=settings.limits)
+        repl(client)
+        return 0
+    except ConfigError as error:
+        print(f"Configuration error: {error}", file=sys.stderr)
+        return 1
+    except (EOFError, KeyboardInterrupt):
+        print("Aborted.")
+        return 1
+    except Exception as error:
+        report_exchange_error(error)
+        return 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
