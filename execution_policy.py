@@ -233,7 +233,10 @@ def evaluate(intent, account, position, instrument, orders, capabilities, *, now
     specs['id'] = reported(instrument.market_id, 'typed instrument evidence')
     parts = [intent.side, 'symbol=' + intent.symbol, 'action=' + intent.action,
              'position_side=' + intent.position_side, 'current_qty=' + str(position.base_quantity),
-             'qty=' + str(intent.quantity), 'price=' + str(intent.price), 'reduce_only=true', 'dry']
+             'qty=' + str(intent.quantity), 'price=' + str(intent.price), 'reduce_only=true',
+             # This unused preview ID is not a reservation or exchange client ID.
+             # Avoid randomness when reusing preparation for pure policy checks.
+             'cl_id=offline_policy_validation', 'dry']
     try:
         order = prepare_order(specs, parts, RiskLimits())
     except (SafetyError, TypeError, AttributeError):

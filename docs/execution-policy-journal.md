@@ -3,7 +3,13 @@
 This checkpoint models eligibility and durable recovery **offline only**. It adds
 no CLI command, authenticated collector, request compiler, submission gateway,
 CCXT order call, or exchange write route. Existing CLI, discovery, mutation
-barriers and offline previews are unchanged. Checkpoint 2 is not implemented.
+barriers and offline previews are unchanged. Request compilation is outside this
+checkpoint's scope.
+
+Subsequent checkpoint 2 work is described separately in
+[offline request compilation and simulation](offline-request-compiler.md). It adds
+an isolated simulation database purpose; the checkpoint 1 journal and observations
+remain offline models, not authenticated execution authority.
 
 ## Trust boundary and eligibility
 

@@ -135,6 +135,9 @@ class StopResult:
 
 
 class OperationJournal:
+    # Simulation databases must never be opened/recovered as ordinary journals.
+    APPLICATION_ID = 0
+
     def __init__(self, path, *, create=False, clock=None):
         self._connection = None
         self._lock = None
@@ -160,6 +163,8 @@ class OperationJournal:
                 raise JournalError('Unsupported journal durability mode')
             if self._connection.execute('PRAGMA user_version').fetchone()[0] != 1:
                 raise JournalError('Unsupported journal schema')
+            if self._connection.execute('PRAGMA application_id').fetchone()[0] != self.APPLICATION_ID:
+                raise JournalError('Journal purpose mismatch')
             if self._connection.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                 raise JournalError('Journal integrity check failed')
             self._recover()
@@ -170,8 +175,9 @@ class OperationJournal:
             raise JournalError('Cannot open a private, intact, exclusive journal') from None
 
     def _initialize(self):
-        self._connection.executescript('''
+        self._connection.executescript(f'''
             BEGIN IMMEDIATE;
+            PRAGMA application_id={self.APPLICATION_ID};
             CREATE TABLE control (
                 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                 mode TEXT NOT NULL CHECK(mode IN ('DISARMED','ARMED','STOPPED')),
