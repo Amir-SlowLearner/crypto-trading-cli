@@ -6,6 +6,7 @@ _send_http. Python method replacement is not an OS security boundary.
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 import hashlib
 import json
 import re
@@ -31,16 +32,23 @@ def _unique_response_pairs(pairs):
     return result
 
 
-def decode_response_json(raw):
+def decode_response_json(raw, *, exact_numbers=False):
     """Reject ambiguous objects at every depth before interpreting evidence."""
     try:
         # Use one encoding and parser for worker acceptance and verifier evidence.
         text = raw.decode('utf-8') if type(raw) is bytes else raw
         if type(text) is not str:
             raise ValueError('Invalid JSON response type')
-        return json.loads(text, object_pairs_hook=_unique_response_pairs)
-    except (ValueError, UnicodeError, TypeError, RecursionError):
+        if type(exact_numbers) is not bool:
+            raise ValueError('Invalid decoder mode')
+        options = {'parse_float': Decimal, 'parse_constant': _reject_json_constant} if exact_numbers else {}
+        return json.loads(text, object_pairs_hook=_unique_response_pairs, **options)
+    except (ValueError, UnicodeError, TypeError, RecursionError, ArithmeticError):
         raise SafetyError('Response JSON is malformed or ambiguous; details withheld') from None
+
+
+def _reject_json_constant(_):
+    raise ValueError('Nonstandard JSON number')
 
 
 @dataclass(frozen=True)

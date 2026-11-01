@@ -6,9 +6,9 @@
     "readonly_exchange.py": "3ae95e97dbf91a526f690deda4ec4ab4dc82ed3fdac9fc0919acba49221b29fa",
     "readonly_worker_store.py": "6f1f114e8774b72acf750fecbf57484128ddd0a3a5dd6450ff5c23a557002ecb",
     "safety.py": "2dded91ab31944736f84cffb925b5a8d3cd8634d10e7752326a168cfd1fd6089",
-    "testnet_compatibility.py": "857bc52d454c51865efa1847ca9c3d0b4374824d96b69e06335244d194812616",
+    "testnet_compatibility.py": "6e151a84197c60eda9f72d46fc74d219b1025af819e35e41aa1ba401235c2d7d",
     "testnet_readonly_worker.py": "79024d7cc13a4e9301f953b5778ae93c5dbb3bf343b2a0f53c8d29c8f476d314",
-    "testnet_transport.py": "585c3e47c295158404663b93ccced5c07736fbe9aa5b49bcca6daaeb25921dee"
+    "testnet_transport.py": "df841312a9fb24d97b65f617fa456315262eb33efc6a69229ac79c2673c3a46d"
   },
   "baseline": "6a7acd4beebc729761d838905727b568381f87f8",
   "dependencies_sha256": "b679f51fc59c733cc42ac478f8a5d6c1f6a690e370c79ddb818951d00259c09e",

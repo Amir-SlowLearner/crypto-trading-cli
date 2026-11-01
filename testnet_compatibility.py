@@ -10,12 +10,13 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import Enum
 from fractions import Fraction
+from types import SimpleNamespace
 import hashlib
 import re
 
 import ccxt
 
-from account_discovery import AccountDiscovery, reported, unknown
+from account_discovery import AccountDiscovery, AccountReport, reported, unknown
 from diagnostics import ResponseEvidence, diagnose
 from instrument_specs import inspect_instrument
 from readonly_exchange import READ_ROUTES, ReadOnlyPhemex
@@ -222,6 +223,11 @@ def _number(value):
                           and abs(number.adjusted()) <= 40) else None
     except (ValueError, ArithmeticError):
         return None
+
+
+def exact_observation_number(value):
+    """Bounded exact numeric interpretation shared by offline display collectors."""
+    return _number(value)
 
 
 @dataclass(frozen=True)
@@ -473,6 +479,23 @@ class CompatibilityVerifier:
             self.ex.markets = None  # No private responses or reusable market cache are retained here.
             reader.identities.clear()
             reader.contexts.clear()
+
+
+def interpret_mock_status(specs, instrument_observation, observations, private_data, *, now,
+                          authentication_failed=False):
+    """Reuse interpretation without constructing an exchange or asserting real origin.
+
+    Inputs are normalized mock assertions, not authenticated collector receipts.
+    The existing synthetic report restriction and all crosschecks remain in force.
+    """
+    account = AccountReport(_utc(now).isoformat())
+    if not authentication_failed and any(label in private_data and observation.success
+                                         for label, observation in observations.items()):
+        account.authenticated = reported(True, 'successful mock private GET envelope')
+    reader = SimpleNamespace(observations=observations,
+        identities={label: _identity(data) for label, data in private_data.items()},
+        contexts={label: _position_context(data) for label, data in private_data.items()})
+    return _report(account, specs, instrument_observation, reader, _utc(now), True, '')
 
 
 def _report(account, specs, instrument_observation, reader, now, synthetic, instrument_error):
