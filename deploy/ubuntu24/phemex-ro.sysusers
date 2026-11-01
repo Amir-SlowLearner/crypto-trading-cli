@@ -1,0 +1,3 @@
+# Proposal only: do not run systemd-sysusers during B1 development.
+# Static account; "-" requests one persistent system UID, not DynamicUser.
+u phemex-ro - "Blocked Phemex read-only worker" /nonexistent /usr/sbin/nologin

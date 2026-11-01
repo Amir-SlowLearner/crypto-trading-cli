@@ -1,0 +1,30 @@
+{
+  "app": {
+    "account_discovery.py": "1b89a7d170f82d1beda3f47b58d250e6eb89ded8a149ef4c9f60a2de23cac6ca",
+    "diagnostics.py": "08c7c9bf57909871384a587a67b0e3e55c0ed32c4e4712e75d30a650fa0ef860",
+    "instrument_specs.py": "46822c51ee0783a6b15e04392b881ee7fc42c71d1d77478dbc0c37c19f783446",
+    "readonly_exchange.py": "3ae95e97dbf91a526f690deda4ec4ab4dc82ed3fdac9fc0919acba49221b29fa",
+    "readonly_worker_store.py": "6f1f114e8774b72acf750fecbf57484128ddd0a3a5dd6450ff5c23a557002ecb",
+    "safety.py": "2dded91ab31944736f84cffb925b5a8d3cd8634d10e7752326a168cfd1fd6089",
+    "testnet_compatibility.py": "857bc52d454c51865efa1847ca9c3d0b4374824d96b69e06335244d194812616",
+    "testnet_readonly_worker.py": "79024d7cc13a4e9301f953b5778ae93c5dbb3bf343b2a0f53c8d29c8f476d314",
+    "testnet_transport.py": "585c3e47c295158404663b93ccced5c07736fbe9aa5b49bcca6daaeb25921dee"
+  },
+  "baseline": "6a7acd4beebc729761d838905727b568381f87f8",
+  "dependencies_sha256": "b679f51fc59c733cc42ac478f8a5d6c1f6a690e370c79ddb818951d00259c09e",
+  "format": 1,
+  "purpose": "offline-readonly-worker-v1",
+  "release": "blocked-cp3-6a7acd4-b1",
+  "requirements_sha256": "a3316be89a8c6063eb517d2b6e7bf795a1b19bb10f1b126541918354aec261c1",
+  "target": {
+    "arch": "x86_64",
+    "os": "ubuntu",
+    "python": "3.12",
+    "version": "24.04"
+  },
+  "tools": {
+    "launch.py": "1fd70edfa5682dd496a68dfeba18717c7ff708d2ddeeaaeb800697717320527c",
+    "package.py": "7fa6fa8775dd02203bf128f379db8245523fca28fad72923ded0331409d5707e",
+    "phemex-ro.sysusers": "82e2dbab0bf7fc1d447543f4b4f4b47bfe44c34cb31b9dd42a9d518a7b540e0c"
+  }
+}
