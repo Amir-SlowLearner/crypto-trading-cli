@@ -14,10 +14,33 @@ def main(argv=None, *, client_factory=None):
     parser.add_argument('--authorize-testnet-read', action='store_true',
                         help='authorize authenticated GET-only inspection of the selected TESTNET account')
     parser.add_argument('--env-file', type=Path)
+    parser.add_argument('--status', action='store_true', help='manual BTCUSDT Testnet status only; no risk probes')
+    parser.add_argument('--symbol', choices=('BTCUSDT',))
+    parser.add_argument('--credentials-env', action='store_true',
+                        help='status only: explicitly select PHEMEX_TESTNET_API_KEY / PHEMEX_TESTNET_API_SECRET')
     options = parser.parse_args(argv)
+    if not options.status and (options.symbol is not None or options.credentials_env):
+        parser.error('--symbol and --credentials-env require --status')
+    if options.status and (bool(options.env_file) == options.credentials_env):
+        parser.error('--status requires exactly one of --env-file or --credentials-env')
     if not options.authorize_testnet_read:
         print('No request made. Explicit --authorize-testnet-read is required.')
         return 2
+    if options.status:
+        # Separate manual development path. Never calls the protected T1C worker
+        # or its bootstrap, and never promotes a local flag to trading authority.
+        try:
+            from manual_testnet_status import load_credentials, collect_manual_status
+            credentials = load_credentials(options.env_file, use_environment=options.credentials_env)
+            report = collect_manual_status(credentials)
+            print(report.render())
+            return 0 if report.complete else 2
+        except (KeyboardInterrupt, EOFError):
+            print('Manual Testnet status aborted; no retry or exchange mutations.')
+            return 130
+        except Exception:
+            print('Manual Testnet status unavailable; private details withheld; no retry.')
+            return 2
     try:
         settings = load_settings(live=False, env_file=options.env_file)
         factory = client_factory or PhemexClient
