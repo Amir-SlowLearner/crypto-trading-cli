@@ -1,8 +1,8 @@
 """T1B: fixed-plan mock HTTP collection. No client, credentials or real transport.
 
-Mock fixtures are assertions, never authenticated exchange evidence. The provider
-cannot be replaced with a callable/network backend through this API. T1C needs a
-separately reviewed collector boundary; changing a provenance label is not one.
+Mock fixtures are assertions, never authenticated exchange evidence. The T1B
+provider cannot be replaced with a callable/network backend. T1C Step 1 has a
+separate exact-type, activation-blocked runtime seam; its reports stay synthetic.
 """
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -107,6 +107,7 @@ class StatusReport:
     checked_at: datetime
     endpoints: tuple
     requirements: tuple
+    collection_mode: str = 't1b_mock'
 
     @property
     def synthetic(self):
@@ -135,8 +136,10 @@ class StatusReport:
                                                 for name in REQUIRED_STATUS_FIELDS))
 
     def render(self):
+        runtime = self.collection_mode == 't1c_mock'
         lines = ['PHEMEX TESTNET STATUS — READ ONLY',
-                 'T1B MOCK REPORT — SYNTHETIC; NOT AUTHENTICATED EXCHANGE OBSERVATIONS',
+                 ('T1C STEP 1 MOCK TRANSPORT REPORT — SYNTHETIC; NOT EXCHANGE VERIFICATION' if runtime else
+                  'T1B MOCK REPORT — SYNTHETIC; NOT AUTHENTICATED EXCHANGE OBSERVATIONS'),
                  'Read window: ' + self.started_at.isoformat() + ' -> ' + self.checked_at.isoformat(),
                  'Sequential snapshot; VERIFIED below means a check passed in mocked evidence only.',
                  'Position quantities/quantity steps: BTC base units. Price ticks: USDT/BTC. Leverage: x.']
@@ -153,7 +156,8 @@ class StatusReport:
         lines += ['Four-response collection: ' + ('COMPLETE' if self.collection_complete else 'PARTIAL/FAILED'),
                   'Scoped mock status checks: ' + ('COMPLETE' if self.complete else 'PARTIAL/FAILED'),
                   'Full account verification: NOT ESTABLISHED',
-                  'No HTTP requests sent. No credentials loaded. Exchange mutations remain disabled.',
+                  ('Step 1 transport mocked or blocked; no real reads authorized. Profile origin unverified. Mutations disabled.' if runtime else
+                   'No HTTP requests sent. No credentials loaded. Exchange mutations remain disabled.'),
                   'Execution authority: NONE; journal resolution: NONE.']
         return '\n'.join(lines)
 
@@ -223,6 +227,18 @@ def collect_status(provider, *, clock=None):
     """Consume one fixed mock transcript. No real/provider-injected HTTP backend."""
     if type(provider) is not MockResponseProvider:
         raise SafetyError('T1B accepts only its in-memory mock response provider')
+    return _collect_status(provider, clock=clock)
+
+
+def collect_runtime_status(runtime, *, clock=None):
+    """Separate Step 1 seam: permanently synthetic, never an actual-read permit."""
+    from testnet_status_runtime import TestnetReadOnlyRuntime
+    if type(runtime) is not TestnetReadOnlyRuntime:
+        raise SafetyError('Expected the dedicated, activation-blocked Testnet runtime')
+    return _collect_status(runtime, clock=clock, collection_mode='t1c_mock')
+
+
+def _collect_status(provider, *, clock=None, collection_mode='t1b_mock'):
     clock = clock or (lambda: datetime.now(timezone.utc))
     started = _utc(clock)
     observations, endpoints, data = {}, [], {}
@@ -266,8 +282,8 @@ def collect_status(provider, *, clock=None):
                     specs = _instrument(data['products'], value)
                 data[entry.label] = value
                 success = True
-            except Exception:
-                diagnostic = diagnostic or 'Invalid, ambiguous or unavailable mock response; details withheld; no retry'
+            except Exception as error:
+                diagnostic = diagnostic or str(diagnose(error))
             completed = _utc(clock)
             if not started <= begin <= completed:
                 success = False
@@ -318,7 +334,7 @@ def collect_status(provider, *, clock=None):
                 row = Requirement(row.name, row.status, row.value, row.provenance, row.source,
                     row.observed_at, 'No reviewed native minimum quantity mapping; quantity step is not a minimum.')
             rows.append(row)
-        return StatusReport(started, checked, tuple(endpoints), tuple(rows) + unavailable)
+        return StatusReport(started, checked, tuple(endpoints), tuple(rows) + unavailable, collection_mode)
     except Exception:
         raise SafetyError('Mock status collection failed; private details withheld') from None
     finally:

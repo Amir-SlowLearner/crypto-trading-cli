@@ -1,0 +1,37 @@
+{
+  "app": {
+    "account_discovery.py": "1b89a7d170f82d1beda3f47b58d250e6eb89ded8a149ef4c9f60a2de23cac6ca",
+    "command_parser.py": "7605c33aebb93d8b4b51c7a645258a47e1904083e2b481b463dcd865361059ed",
+    "config.py": "7aa6eb6bd4e58119cdd0cfac577c6629e85f4525d0c1b024b63cf634e7191477",
+    "deploy/ubuntu24/launch.py": "1fd70edfa5682dd496a68dfeba18717c7ff708d2ddeeaaeb800697717320527c",
+    "diagnostics.py": "08c7c9bf57909871384a587a67b0e3e55c0ed32c4e4712e75d30a650fa0ef860",
+    "execution_policy.py": "86fd5c8cf2c1f26228f0eabc7640e460d583e1f3570f024f7478cfec235952c8",
+    "instrument_specs.py": "46822c51ee0783a6b15e04392b881ee7fc42c71d1d77478dbc0c37c19f783446",
+    "order_preparation.py": "8ba6019fe5aec1291af9c09071d2efe29c82dda7fa55e18bc785b71e0f89633f",
+    "phemex_request_compiler.py": "21baae2057c0f0eccce56ba851152ccf0760688439c7dfefa99f685f92d69985",
+    "readonly_exchange.py": "3ae95e97dbf91a526f690deda4ec4ab4dc82ed3fdac9fc0919acba49221b29fa",
+    "readonly_worker_store.py": "6f1f114e8774b72acf750fecbf57484128ddd0a3a5dd6450ff5c23a557002ecb",
+    "safety.py": "2dded91ab31944736f84cffb925b5a8d3cd8634d10e7752326a168cfd1fd6089",
+    "testnet_compatibility.py": "6e151a84197c60eda9f72d46fc74d219b1025af819e35e41aa1ba401235c2d7d",
+    "testnet_read_run_store.py": "fafc974a1758b3ce21f0830e849cac84ccaccbfd08a6d7c2c9ca647cb847ce7b",
+    "testnet_status_collection.py": "9f77e5fb5fa03c4fcde254c1dc3bd4450e848f05e1464138090f53be71784e81",
+    "testnet_status_once.py": "2579eaeac4b4729e1bc9a2efdbe1693dc0701be8a1cabe02a870f0d72183ad20",
+    "testnet_status_runtime.py": "d31db055ecdea24af818dd46021c0aa48472f5bdfceaaeacc9036e3886b578e2",
+    "testnet_transport.py": "df841312a9fb24d97b65f617fa456315262eb33efc6a69229ac79c2673c3a46d"
+  },
+  "baseline": "57eafd3b934db5f1a726801d4293ad5a64b7134c",
+  "dependencies_sha256": "b679f51fc59c733cc42ac478f8a5d6c1f6a690e370c79ddb818951d00259c09e",
+  "format": 1,
+  "purpose": "blocked-testnet-status-bootstrap-v1",
+  "requirements_sha256": "a3316be89a8c6063eb517d2b6e7bf795a1b19bb10f1b126541918354aec261c1",
+  "target": {
+    "arch": "x86_64",
+    "os": "ubuntu",
+    "python": "3.12",
+    "version": "24.04"
+  },
+  "tools": {
+    "launch.py": "f64460231cf0dd37d28bc717a41127c25b445ed244310de142929dc5cabb4d6e",
+    "preflight.py": "7fa6fa8775dd02203bf128f379db8245523fca28fad72923ded0331409d5707e"
+  }
+}

@@ -189,6 +189,12 @@ continue to cover that boundary; T1B does not claim to exercise new real signing
 TLS, network isolation or endpoint compatibility. No new GET route is approved.
 No report can resolve a journal or authorize exchange execution.
 
+[T1C Step 1](testnet-status-runtime.md) now adds a separate activation-blocked
+runtime and `collect_runtime_status` seam for mocked transport tests. It reuses
+this collection engine and UNKNOWN rules while retaining synthetic-only output.
+The existing command still accepts only `status --mock-demo`; no actual-read mode,
+credential option, worker activation or network permission has been added.
+
 ## Offline verification
 
 ```bash
