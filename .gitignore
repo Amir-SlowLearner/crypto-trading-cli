@@ -1,0 +1,5 @@
+*.env
+!*.env.example
+trades.log
+__pycache__/
+.venv/
