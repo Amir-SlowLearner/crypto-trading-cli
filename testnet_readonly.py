@@ -14,13 +14,21 @@ def main(argv=None, *, client_factory=None):
     parser.add_argument('--authorize-testnet-read', action='store_true',
                         help='authorize authenticated GET-only inspection of the selected TESTNET account')
     parser.add_argument('--env-file', type=Path)
-    parser.add_argument('--status', action='store_true', help='manual BTCUSDT Testnet status only; no risk probes')
-    parser.add_argument('--symbol', choices=('BTCUSDT',))
+    parser.add_argument('--status', action='store_true', help='manual USDT linear perpetual Testnet status; no risk probes')
+    def market_selector(value):
+        from manual_market_catalog import valid_selector
+        if not valid_selector(value):
+            raise argparse.ArgumentTypeError('expected a native or unified perpetual symbol')
+        return value
+    parser.add_argument('--symbol', type=market_selector, help='native or unified symbol; default BTCUSDT')
+    parser.add_argument('--markets', action='store_true', help='status only: refresh and list public market support')
     parser.add_argument('--credentials-env', action='store_true',
                         help='status only: explicitly select PHEMEX_TESTNET_API_KEY / PHEMEX_TESTNET_API_SECRET')
     options = parser.parse_args(argv)
-    if not options.status and (options.symbol is not None or options.credentials_env):
-        parser.error('--symbol and --credentials-env require --status')
+    if not options.status and (options.symbol is not None or options.credentials_env or options.markets):
+        parser.error('--symbol, --markets and --credentials-env require --status')
+    if options.markets and options.symbol is not None:
+        parser.error('--markets and --symbol are mutually exclusive')
     if options.status and (bool(options.env_file) == options.credentials_env):
         parser.error('--status requires exactly one of --env-file or --credentials-env')
     if not options.authorize_testnet_read:
@@ -32,7 +40,7 @@ def main(argv=None, *, client_factory=None):
         try:
             from manual_testnet_status import load_credentials, collect_manual_status
             credentials = load_credentials(options.env_file, use_environment=options.credentials_env)
-            report = collect_manual_status(credentials)
+            report = collect_manual_status(credentials, symbol=options.symbol or 'BTCUSDT', list_markets=options.markets)
             print(report.render())
             return 0 if report.complete else 2
         except (KeyboardInterrupt, EOFError):

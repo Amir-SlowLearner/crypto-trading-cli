@@ -23,6 +23,7 @@ from urllib3.connection import HTTPConnection, HTTPSConnection
 
 from account_discovery import AccountDiscovery, Fact, unknown
 from diagnostics import ResponseEvidence, diagnose
+from manual_market_catalog import MarketCatalog, build_catalog, on_grid, valid_selector
 from readonly_exchange import ReadOnlyPhemex
 from safety import SafetyError
 from testnet_transport import PLAN, PROXY_OPTIONS, _fingerprint, _validate_wire, decode_response_json
@@ -176,6 +177,7 @@ class ManualTestnetPhemex(ReadOnlyPhemex):
     def __init__(self, credentials):
         self._ready, self._running, self._used, self._failed = False, None, False, False
         self._index, self._pending = 0, None
+        self._public_catalog, self._legacy_catalog = None, None
         self._lock = RLock()
         self._guard_session = _StatusSession(self)
         if type(credentials) is not ManualCredentials:
@@ -270,6 +272,20 @@ class ManualTestnetPhemex(ReadOnlyPhemex):
         # exact reviewed public/three-header private wire form instead.
         return dict(headers or {})
 
+    def parse_swap_market(self, market):
+        # Pure parsing only. Keep malformed/unfamiliar products in the native
+        # inventory for an explicit UNSUPPORTED result instead of losing them.
+        try:
+            return super().parse_swap_market(market)
+        except Exception:
+            return None
+
+    def parse_spot_market(self, market):
+        try:
+            return super().parse_spot_market(market)
+        except Exception:
+            return None
+
     def parse_json(self, text):
         value = decode_response_json(text, exact_numbers=True)
         entry = MANUAL_PLAN[self._index - 1]
@@ -283,6 +299,10 @@ class ManualTestnetPhemex(ReadOnlyPhemex):
             if (type(data.get('account')) is not dict or data['account'].get('currency') != 'USDT'
                     or type(data.get('positions')) is not list):
                 raise SafetyError('Private USDT response scope or inventory unavailable')
+        elif entry == MANUAL_PLAN[0]:
+            self._public_catalog = value['data']
+        elif entry == MANUAL_PLAN[1]:
+            self._legacy_catalog = value['data']
         return value
 
     def close(self, *args, **kwargs):
@@ -300,6 +320,8 @@ class LegStatus:
     leverage: Fact = field(default_factory=unknown)
     margin: Fact = field(default_factory=unknown)
     mode: Fact = field(default_factory=unknown)
+    grid_compatible: Fact = field(default_factory=unknown)
+    contracts: Fact = field(default_factory=unknown)
 
 
 @dataclass(frozen=True)
@@ -309,6 +331,9 @@ class ManualStatus:
     authenticated: bool
     legs: tuple
     issues: tuple
+    market: object = None
+    catalog: MarketCatalog = field(default_factory=MarketCatalog)
+    list_only: bool = False
 
     @property
     def execution_authorized(self):
@@ -320,19 +345,34 @@ class ManualStatus:
 
     @property
     def complete(self):
+        if self.list_only:
+            return bool(self.catalog.markets) and not self.catalog.issues and not self.issues
         return self.authenticated and not self.issues and all(
-            f.value is not None for leg in self.legs for f in (leg.quantity, leg.leverage, leg.margin, leg.mode))
+            f.value is not None for leg in self.legs for f in (leg.quantity, leg.leverage, leg.margin, leg.mode)
+        ) and all(leg.grid_compatible.value is True for leg in self.legs)
 
     def render(self):
         def display(f):
             return str(f) if f.value is not None else 'UNKNOWN (' + f.reason + ')'
         lines = ['MANUAL PHEMEX TESTNET STATUS — READ ONLY; DEVELOPMENT USE',
                  'Authentication: ' + ('successful private Testnet response' if self.authenticated else 'UNKNOWN'),
-                 'Observation window (UTC): ' + self.started_at + ' -> ' + self.completed_at,
-                 'BTCUSDT / BTC/USDT:USDT; quantities in BTC base units.']
-        for leg in self.legs:
+                 'Observation window (UTC): ' + self.started_at + ' -> ' + self.completed_at]
+        if self.list_only or self.market is None:
+            lines.append(self.catalog.render())
+        if self.market is not None:
+            m = self.market
+            lines += [f'{m.native} / {m.symbol}; quantities in {m.base} base units.',
+                      f'Contract size={display(m.contract_size)} {m.base}; quantity step={display(m.quantity_step)} {m.base}; '
+                      f'price tick={display(m.price_tick)} USDT; minimum quantity={display(m.minimum_quantity)}.']
+        for leg in (() if self.list_only else self.legs):
             lines.append(f'{leg.side}: quantity={display(leg.quantity)}; leverage={display(leg.leverage)}; '
-                         f'margin={display(leg.margin)}; position_mode={display(leg.mode)}')
+                         f'margin={display(leg.margin)}; position_mode={display(leg.mode)}; '
+                         f'contracts={display(leg.contracts)}; quantity_grid={display(leg.grid_compatible)}')
+        if self.market is not None:
+            unsupported = [m for m in self.catalog.markets if m.status == 'unsupported']
+            if unsupported:
+                lines.append(f'Catalog: {len(unsupported)} unsupported products; inspect --markets for details.')
+            lines.extend('Catalog issue: ' + issue for issue in self.catalog.issues)
         lines += ['Issue: ' + issue for issue in self.issues]
         lines += ['Accounting, account-wide funds, stable account identity and order coverage: UNKNOWN.',
                   'Single sequential snapshot; no order acceptance or trading safety established.',
@@ -340,7 +380,8 @@ class ManualStatus:
         return '\n'.join(lines)
 
 
-def _interpret(exchange, data):
+
+def _interpret(exchange, data, market):
     missing = lambda reason: tuple(LegStatus(s, *(unknown(reason) for _ in range(4))) for s in ('Long','Short'))
     if (type(data) is not dict or type(data.get('account')) is not dict
             or data['account'].get('currency') != 'USDT' or type(data.get('positions')) is not list):
@@ -348,10 +389,10 @@ def _interpret(exchange, data):
     raw_rows = data['positions']
     if any(type(r) is not dict or type(r.get('symbol')) is not str for r in raw_rows):
         return missing('ambiguous position inventory'), ('Malformed position row',)
-    selected = [r for r in raw_rows if r['symbol'] == 'BTCUSDT']
+    selected = [r for r in raw_rows if r['symbol'] == market.native]
     if any(r.get('posSide') not in ('Long','Short') or r.get('posMode') != 'Hedged'
            or r.get('currency') not in (None,'USDT') for r in selected):
-        return missing('consistent BTCUSDT Hedge Mode not established'), ('Position mode, leg or currency unavailable/conflicting',)
+        return missing('consistent selected-market Hedge Mode not established'), ('Position mode, leg or currency unavailable/conflicting',)
     reader = AccountDiscovery(exchange)  # Interpret only; never call discover().
     legs, issues = [], []
     for side in ('Long','Short'):
@@ -365,15 +406,22 @@ def _interpret(exchange, data):
             legs.append(LegStatus(side, *(unknown('contradictory position direction') for _ in range(4))))
             issues.append(side + ': contradictory position direction')
             continue
-        legs.append(LegStatus(side, parsed['base_quantity'], parsed['configured_leverage'],
-                              parsed['margin_mode'], parsed['position_mode']))
+        quantity = parsed['base_quantity']
+        # Raw base quantity is an observation, not proof of grid compatibility.
+        grid = on_grid(quantity.value, market.quantity_step.value)
+        grid_fact = Fact(True, 'derived', 'sizeRq / native quantity step', '') if grid else unknown(
+            'position quantity is missing, off-grid or exceeds verified arithmetic bounds')
+        contracts = Fact(quantity.value, 'derived', 'base quantity / reviewed contractSize=1', '') if grid else unknown(
+            'contract quantity interpretation unavailable')
+        legs.append(LegStatus(side, quantity, parsed['configured_leverage'],
+                              parsed['margin_mode'], parsed['position_mode'], grid_fact, contracts))
     issues.extend(reader.report.issues)
     if data.get('nextPageArg'):
         issues.append('Position inventory is paginated/incomplete')
     return tuple(legs), tuple(issues)
 
 
-def collect_manual_status(credentials, *, clock=None):
+def collect_manual_status(credentials, *, symbol='BTCUSDT', list_markets=False, clock=None):
     """One explicit manual attempt. Actual-origin display, never trusted policy evidence.
 
     Offline tests mock the HTTP adapter; no provenance label authenticates data.
@@ -382,26 +430,36 @@ def collect_manual_status(credentials, *, clock=None):
     started = clock().isoformat()
     legs = (LegStatus('Long'), LegStatus('Short'))
     issues, authenticated, exchange = (), False, None
+    catalog, market = MarketCatalog(), None
     try:
+        if not valid_selector(symbol) or type(list_markets) is not bool:
+            raise SafetyError('Invalid market selection')
         if ccxt.__version__ != '4.5.90':
             raise SafetyError('Manual CCXT version requires review')
         exchange = ManualTestnetPhemex(credentials)
         exchange.begin()
         # fetch_markets performs exactly the two reviewed public GETs. Avoid
         # load_markets(), whose implicit fetch_currencies adds another request.
-        exchange.set_markets(exchange.fetch_markets())
-        reader = AccountDiscovery(exchange)
-        market = reader.instrument('BTCUSDT')
-        if (market is None or market.get('active') is not True or market.get('quote') != 'USDT'
-                or (market.get('info') or {}).get('status') != 'Listed'):
-            raise SafetyError('BTCUSDT instrument unavailable or unsupported')
-        value = exchange.privateGetGAccountsPositions({'currency':'USDT'})
-        authenticated = True  # Accepted HTTP 200 and successful private envelope only.
-        legs, issues = _interpret(exchange, value['data'])
+        parsed = exchange.fetch_markets()
+        catalog = build_catalog(exchange._public_catalog, exchange._legacy_catalog, parsed, exchange.precisionMode)
+        if not list_markets:
+            market = catalog.resolve(symbol)
+            if catalog.issues:
+                raise SafetyError('Incomplete public product inventory; interpretation unavailable')
+            # Register only audited supported markets. No duplicate coalescing or
+            # unrelated malformed product may change the selected mapping.
+            supported_keys = {(m.native, m.symbol) for m in catalog.markets if m.supported}
+            exchange.set_markets([m for m in parsed if m.get('type') == 'swap'
+                                 and (m.get('id'), m.get('symbol')) in supported_keys])
+            value = exchange.privateGetGAccountsPositions({'currency':'USDT'})
+            authenticated = True  # Accepted HTTP 200 and successful private envelope only.
+            legs, issues = _interpret(exchange, value['data'], market)
     except Exception as error:
         evidence = exchange.last_read_diagnostic if exchange is not None else None
         issues = (str(diagnose(error, evidence)),)
+        if exchange is not None and not catalog.markets and exchange._public_catalog is not None:
+            catalog = build_catalog(exchange._public_catalog, exchange._legacy_catalog, [], exchange.precisionMode)
     finally:
         if exchange is not None:
             exchange.close()
-    return ManualStatus(started, clock().isoformat(), authenticated, legs, issues)
+    return ManualStatus(started, clock().isoformat(), authenticated, legs, issues, market, catalog, list_markets)
