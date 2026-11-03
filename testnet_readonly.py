@@ -22,13 +22,17 @@ def main(argv=None, *, client_factory=None):
         return value
     parser.add_argument('--symbol', type=market_selector, help='native or unified symbol; default BTCUSDT')
     parser.add_argument('--markets', action='store_true', help='status only: refresh and list public market support')
+    parser.add_argument('--position-schema', action='store_true',
+                        help='status only: sanitized selected-symbol row schema; no position values')
     parser.add_argument('--credentials-env', action='store_true',
                         help='status only: explicitly select PHEMEX_TESTNET_API_KEY / PHEMEX_TESTNET_API_SECRET')
     options = parser.parse_args(argv)
-    if not options.status and (options.symbol is not None or options.credentials_env or options.markets):
-        parser.error('--symbol, --markets and --credentials-env require --status')
+    if not options.status and (options.symbol is not None or options.credentials_env or options.markets or options.position_schema):
+        parser.error('--symbol, --markets, --position-schema and --credentials-env require --status')
     if options.markets and options.symbol is not None:
         parser.error('--markets and --symbol are mutually exclusive')
+    if options.markets and options.position_schema:
+        parser.error('--markets and --position-schema are mutually exclusive')
     if options.status and (bool(options.env_file) == options.credentials_env):
         parser.error('--status requires exactly one of --env-file or --credentials-env')
     if not options.authorize_testnet_read:
@@ -40,7 +44,12 @@ def main(argv=None, *, client_factory=None):
         try:
             from manual_testnet_status import load_credentials, collect_manual_status
             credentials = load_credentials(options.env_file, use_environment=options.credentials_env)
-            report = collect_manual_status(credentials, symbol=options.symbol or 'BTCUSDT', list_markets=options.markets)
+            report = collect_manual_status(credentials, symbol=options.symbol or 'BTCUSDT', list_markets=options.markets,
+                                           position_schema=options.position_schema)
+            if options.position_schema:
+                print(report.render_position_schema())
+                diagnostic = report.position_diagnostic
+                return 0 if report.authenticated and diagnostic is not None and diagnostic.available and not diagnostic.incomplete else 2
             print(report.render())
             return 0 if report.complete else 2
         except (KeyboardInterrupt, EOFError):

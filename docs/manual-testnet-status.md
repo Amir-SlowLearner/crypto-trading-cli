@@ -285,10 +285,113 @@ explicit BTCUSDT Hedge Mode legs. ETHUSDT and XRPUSDT have no matching returned
 legs and remain UNKNOWN. These observations do not establish complete position
 coverage, compatibility with other accounts or exchange order acceptance.
 
+## Selected-symbol position-row diagnostic
+
+Both legs reporting `missing or duplicate leg` has a specific local cause:
+after matching the selected market's **exact native symbol**, the parser did not
+find exactly one `posSide=Long` row and exactly one `posSide=Short` row.
+This message alone cannot distinguish omitted rows, duplicate rows or a different
+symbol spelling in the private response. It does not prove that the exchange
+omits empty positions or that any position quantity is zero.
+
+| Private response representation | Existing status interpretation |
+| --- | --- |
+| One explicit Hedged Long and Short row, including explicit zero quantities | Each leg is interpreted and checked independently. |
+| No selected-symbol rows | Both legs UNKNOWN; no zero positions invented. |
+| Only one leg returned | Usable returned leg retained; missing leg UNKNOWN. |
+| Multiple rows for a leg, even identical rows | That leg UNKNOWN; no merging or summing. |
+| OneWay/Merged, missing mode/leg, conflicting mode or currency | Hedge Mode not established; no conversion into Long/Short. |
+| Unified or case-variant private symbol rather than exact native symbol | Not accepted as a native position match without further evidence. |
+| Malformed/unscopable rows or pagination | Coverage remains UNKNOWN/incomplete. |
+
+The general account interpreter can recognize OneWay/Merged positions, but this
+manual view intentionally requires explicit Hedge Mode legs. CCXT 4.5.90's
+normalized position fields are not a safe substitute: its raw direction mapping
+can classify the literal `side="None"` as short, and missing `crossMargin` can
+default to isolated. Neither default establishes the actual leg or margin mode.
+Do not switch to `fetch_positions()` for diagnosis: its default USDT route is
+different from this command's approved private route, and its implementation does
+not establish whether absent rows mean empty positions.
+
+After **separate explicit authorization** for another manual collection, run:
+
+```bash
+.venv/bin/python -B testnet_readonly.py \
+  --status --position-schema --symbol XRPUSDT \
+  --env-file manual-testnet.env --authorize-testnet-read
+```
+
+This is an opt-in diagnostic view using the same three GETs, signing and transport
+restrictions. It makes no additional requests and leaves status interpretation
+unchanged. It prints only selected-market identity, counts of exact native,
+unified and case-variant candidate rows, reviewed leg/mode/direction labels and
+whitelisted position-field names/types. Related spellings are diagnostic
+candidates, not newly accepted aliases. Unknown values and unreviewed field names
+are omitted. No quantity values, leverage values, balances, account identifiers,
+credentials, pagination cursors, raw responses or unrelated positions are shown.
+Row detail is capped at 20 selected candidates; counts still include all matching
+rows, and truncation is marked incomplete.
+
+Exit 0 in this diagnostic view means the selected schema was collected without
+reported truncation, pagination or unscopable rows. It does **not** mean positions
+were verified: even zero matching rows can be a complete diagnostic result while
+the ordinary status remains UNKNOWN. Request failures or incomplete diagnostics
+exit 2. The diagnostic cannot authorize execution or resolve journals.
+
+For the unresolved XRP case, the minimum additional evidence is this sanitized
+diagnostic output, especially the three match-group counts and selected row
+leg/mode labels and field types. Do not share raw JSON, profile contents or API
+keys. A zero exact-match count still would not prove an absent position; changing
+the parser requires evidence of the actual representation and its semantics.
+
+## Position inventory completeness remains unestablished
+
+The operator subsequently observed two native BTCUSDT rows (Long/Short, HEDGE,
+FLAT), no ETHUSDT/XRPUSDT rows and no related-symbol candidates. This rules out
+the diagnostic's duplicate-leg and related-spelling explanations for those
+observations. FLAT is a direction label, not independent numeric size evidence.
+
+The current private request is exactly `GET /g-accounts/positions?currency=USDT`.
+Changing `--symbol` changes only local selection; it does not add an HTTP symbol
+filter. Every invocation collects the same account/currency-scoped route, so
+repeating it for different symbols cannot broaden server-side coverage.
+
+The [published endpoint example](https://phemex-docs.github.io/#query-account-positions-with-unrealized-pnl)
+includes both a nonzero Long and an explicitly zero Short. Its documented query
+parameter is currency; no pagination controls or omitted-row interpretation are
+specified. The [official hedged-contract documentation](https://github.com/phemex/phemex-api-docs/blob/master/Public-Hedged-Perpetual-API.md#query-account-positions-with-unrealized-pnl)
+also does not establish that every market has a position record. An
+initialized-contract subset is a hypothesis, not a verified endpoint contract.
+
+Pinned CCXT 4.5.90 defaults `fetch_positions()` to the different
+`/g-accounts/accountPositions` route. It parses the returned list, defaults a
+missing list to empty and filters symbols locally; it does not prove inventory
+completeness or provide pagination for this call. Synthetic fixtures exercise
+interpretation only and cannot establish actual omission semantics.
+
+Public catalog completeness is separate from private position completeness.
+USDT scope excludes other settlement accounts; successful authentication does
+not establish stable account identity or Classic/MultiAsset classification.
+An absent cursor does not prove complete coverage. Product metadata cannot
+supply a missing account position or its Hedge Mode, leverage or margin mode.
+No parser change is justified by the observations above; missing legs remain
+UNKNOWN and cannot authorize a reduction or execution.
+
+The smallest later read-only crosscheck is one primary response and one
+`GET /g-accounts/accountPositions?currency=USDT`, compared within the same run,
+without disclosing identifiers. That second GET exists in the older four-request
+plan but is **not** permitted by the manual three-request command. Enabling it
+there would require separate approval and focused transport tests, plus separate
+authorization for an actual request. The older transport remains blocked.
+Even agreement on omitted rows would not establish zero; a documented completeness
+guarantee or clarification from Phemex is still needed. Do not initialize a
+contract, change settings or place an order to make rows appear. Symbol-filtered
+queries, new currencies, cursors and other routes are not implicitly authorized.
+
 ## Offline checks
 
 ```bash
-.venv/bin/python -B -m unittest tests.test_manual_testnet_status tests.test_manual_market_catalog tests.test_discovery_commands -q
+.venv/bin/python -B -m unittest tests.test_position_row_diagnostic tests.test_manual_testnet_status tests.test_manual_market_catalog tests.test_discovery_commands -q
 .venv/bin/python -B -m unittest discover -q
 .venv/bin/python -B -m pip check
 git diff --check

@@ -24,6 +24,7 @@ from urllib3.connection import HTTPConnection, HTTPSConnection
 from account_discovery import AccountDiscovery, Fact, unknown
 from diagnostics import ResponseEvidence, diagnose
 from manual_market_catalog import MarketCatalog, build_catalog, on_grid, valid_selector
+from position_row_diagnostic import describe_position_rows
 from readonly_exchange import ReadOnlyPhemex
 from safety import SafetyError
 from testnet_transport import PLAN, PROXY_OPTIONS, _fingerprint, _validate_wire, decode_response_json
@@ -334,6 +335,7 @@ class ManualStatus:
     market: object = None
     catalog: MarketCatalog = field(default_factory=MarketCatalog)
     list_only: bool = False
+    position_diagnostic: object = None
 
     @property
     def execution_authorized(self):
@@ -379,6 +381,17 @@ class ManualStatus:
                   'No exchange mutations; no execution authority or journal resolution.']
         return '\n'.join(lines)
 
+    def render_position_schema(self):
+        lines = ['MANUAL TESTNET POSITION SCHEMA — READ ONLY; NOT POSITION VERIFICATION',
+                 'Authentication: ' + ('successful private Testnet response' if self.authenticated else 'UNKNOWN'),
+                 'Observation window (UTC): ' + self.started_at + ' -> ' + self.completed_at]
+        if self.position_diagnostic is None:
+            lines.append('Selected position diagnostic unavailable.')
+            lines.extend('Issue: ' + issue for issue in self.issues)
+        else:
+            lines.extend(self.position_diagnostic.lines)
+        lines.append('No quantities, balances, account identifiers or raw responses shown; no execution authority.')
+        return '\n'.join(lines)
 
 
 def _interpret(exchange, data, market):
@@ -421,7 +434,7 @@ def _interpret(exchange, data, market):
     return tuple(legs), tuple(issues)
 
 
-def collect_manual_status(credentials, *, symbol='BTCUSDT', list_markets=False, clock=None):
+def collect_manual_status(credentials, *, symbol='BTCUSDT', list_markets=False, position_schema=False, clock=None):
     """One explicit manual attempt. Actual-origin display, never trusted policy evidence.
 
     Offline tests mock the HTTP adapter; no provenance label authenticates data.
@@ -431,8 +444,10 @@ def collect_manual_status(credentials, *, symbol='BTCUSDT', list_markets=False, 
     legs = (LegStatus('Long'), LegStatus('Short'))
     issues, authenticated, exchange = (), False, None
     catalog, market = MarketCatalog(), None
+    position_diagnostic = None
     try:
-        if not valid_selector(symbol) or type(list_markets) is not bool:
+        if (not valid_selector(symbol) or type(list_markets) is not bool or type(position_schema) is not bool
+                or (list_markets and position_schema)):
             raise SafetyError('Invalid market selection')
         if ccxt.__version__ != '4.5.90':
             raise SafetyError('Manual CCXT version requires review')
@@ -453,6 +468,8 @@ def collect_manual_status(credentials, *, symbol='BTCUSDT', list_markets=False, 
                                  and (m.get('id'), m.get('symbol')) in supported_keys])
             value = exchange.privateGetGAccountsPositions({'currency':'USDT'})
             authenticated = True  # Accepted HTTP 200 and successful private envelope only.
+            if position_schema:
+                position_diagnostic = describe_position_rows(value['data'], market)
             legs, issues = _interpret(exchange, value['data'], market)
     except Exception as error:
         evidence = exchange.last_read_diagnostic if exchange is not None else None
@@ -462,4 +479,5 @@ def collect_manual_status(credentials, *, symbol='BTCUSDT', list_markets=False, 
     finally:
         if exchange is not None:
             exchange.close()
-    return ManualStatus(started, clock().isoformat(), authenticated, legs, issues, market, catalog, list_markets)
+    return ManualStatus(started, clock().isoformat(), authenticated, legs, issues, market, catalog, list_markets,
+                        position_diagnostic)
