@@ -5,6 +5,9 @@ Live connectivity additionally requires --live, PHEMEX_ALLOW_LIVE=true, and LIVE
 confirmation. All exchange mutations are disabled in this increment.
 
 Commands:
+  price BTCUSDT
+  positions BTCUSDT | orders BTCUSDT
+  order-status EXCHANGE_ID [symbol=BTCUSDT]
   account | balance | modes [symbol=BTCUSDT]
   positions [symbol=BTCUSDT] | info symbol=BTCUSDT
   orders symbol=BTCUSDT
@@ -32,7 +35,8 @@ import logging
 from pathlib import Path
 import sys
 
-from command_parser import CommandError, dec, parse
+from command_parser import CommandError, dec
+from trading_reads import parse, price as read_price, positions as read_positions, orders as read_orders
 from config import ConfigError, load_settings
 from safety import SafetyError, reject_mutation
 from order_preparation import check_sl_tp, prepare_order, render_preparation
@@ -103,12 +107,15 @@ def cmd_leverage(client, parts):
 
 
 def cmd_orders(client, parts):
-    args, _ = parse(parts)
-    rows = client.open_orders(client.resolve(args["symbol"]))
-    if not rows:
-        print("No open orders returned by the exchange.")
-    for order in rows:
-        print_order(order)
+    read_orders(client, parts)
+
+
+def cmd_price(client, parts):
+    read_price(client, parts)
+
+
+def cmd_order_status(client, parts):
+    read_orders(client, parts)
 
 
 def find_order(client, args):
@@ -236,6 +243,8 @@ def cmd_balance(client, parts):
 
 
 def cmd_positions(client, parts):
+    if read_positions(client, parts):
+        return
     args, _ = parse(parts)
     if 'symbol' in args:
         client.instrument(args['symbol'])  # reject unsupported input before private requests
@@ -267,10 +276,12 @@ def cmd_info(client, parts):
 def cmd_help(client, parts):
     parse(parts)
     print(__doc__)
+    print('order-status requires symbol= unless a previous orders read bound that exact ID in this session.')
     print(f"Limits: MAX_NOTIONAL_USDT={client.limits.max_notional_usdt}; MAX_LEVERAGE={client.limits.max_leverage}")
 
 
 COMMANDS = {
+    "price": cmd_price, "order-status": cmd_order_status,
     "buy": cmd_buy, "sell": cmd_sell, "close": cmd_close, "leverage": cmd_leverage,
     "orders": cmd_orders, "amend": cmd_amend, "cancel": cmd_cancel,
     "cancelall": cmd_cancelall, "balance": cmd_balance, "positions": cmd_positions,

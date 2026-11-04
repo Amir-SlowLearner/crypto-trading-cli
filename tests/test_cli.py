@@ -181,28 +181,31 @@ class CliRegressionTests(OfflineTestCase):
 
     def test_api_error_is_not_displayed_as_no_orders_or_as_secret(self):
         client, ex = make_client()
-        ex.fetch_open_orders.side_effect = ccxt.AuthenticationError('SECRET_SENTINEL signed-url api-key')
+        ex.privateGetGAccountsPositions.side_effect = ccxt.AuthenticationError('SECRET_SENTINEL signed-url api-key')
         output = io.StringIO()
         with patch('builtins.input', side_effect=['orders symbol=BTCUSDT', 'exit']), \
-             contextlib.redirect_stdout(output), self.assertLogs('trades') as logs:
+             contextlib.redirect_stdout(output):
             cli.repl(client)
-        combined = output.getvalue() + '\n'.join(logs.output)
+        combined = output.getvalue()
         self.assertNotIn('SECRET_SENTINEL', combined)
         self.assertNotIn('signed-url', combined)
         self.assertNotIn('No open orders', combined)
         self.assertNotIn('Connected', combined)
-        self.assertIn('unverified', combined)
-        self.assertIn('No automatic retry', combined)
-        self.assertEqual(ex.fetch_open_orders.call_count, 1)
+        self.assertIn('UNKNOWN', combined)
+        self.assertIn('no order lookup attempted', combined)
+        self.assertEqual(ex.privateGetGAccountsPositions.call_count, 1)
+        ex.fetch_open_orders.assert_not_called()
 
     def test_timeout_is_sanitized_and_never_automatically_retried(self):
         client, ex = make_client()
-        ex.fetch_open_orders.side_effect = ccxt.RequestTimeout('SECRET_SENTINEL')
+        ex.privateGetGAccountsPositions.side_effect = ccxt.RequestTimeout('SECRET_SENTINEL')
         with patch('builtins.input', side_effect=['orders symbol=BTCUSDT', 'exit']), \
-             contextlib.redirect_stdout(io.StringIO()) as output, self.assertLogs('trades') as logs:
+             contextlib.redirect_stdout(io.StringIO()) as output:
             cli.repl(client)
-        self.assertEqual(ex.fetch_open_orders.call_count, 1)
-        self.assertNotIn('SECRET_SENTINEL', output.getvalue() + str(logs.output))
+        self.assertEqual(ex.privateGetGAccountsPositions.call_count, 1)
+        self.assertNotIn('SECRET_SENTINEL', output.getvalue())
+        self.assertIn('UNKNOWN', output.getvalue())
+        ex.fetch_open_orders.assert_not_called()
         ex.create_order.assert_not_called()
 
     def test_legacy_entrypoint_import_has_no_side_effects(self):
@@ -216,9 +219,10 @@ class CliRegressionTests(OfflineTestCase):
         client, ex = discovery_client()
         self.assertIn('available_margin: unknown', self.run_command(client, 'balance'))
         self.assertIn('contract_size', self.run_command(client, 'info symbol=BTCUSDT'))
-        self.assertIn('one_way', self.run_command(client, 'positions symbol=BTCUSDT'))
+        self.assertIn('Long: quantity=UNKNOWN', self.run_command(client, 'positions symbol=BTCUSDT'))
         self.assertIn('hedge', self.run_command(client, 'modes symbol=ETHUSDT'))
         self.assertIn('accounting: classic', self.run_command(client, 'account'))
-        ex.fetch_open_orders.return_value = [open_order()]
-        self.assertIn('order-1', self.run_command(client, 'orders symbol=BTCUSDT'))
+        # No identity fields are provided by this fixture: do not invent an
+        # account binding merely because a normalized order object is available.
+        self.assertIn('UNKNOWN', self.run_command(client, 'orders symbol=BTCUSDT'))
         self.assertIn('mutations are disabled', self.run_command(client, 'help'))

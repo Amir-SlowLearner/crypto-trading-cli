@@ -3,13 +3,14 @@
 CCXT owns signing and transport. The application owns risk and recovery.
 No account, position or margin settings are changed during initialization.
 """
+from collections import Counter
 from decimal import Decimal
 
 from account_discovery import AccountDiscovery
 from command_parser import dec
 from config import RiskLimits
 from safety import SafetyError, reject_mutation
-from readonly_exchange import ReadOnlyPhemex
+from trading_reads import TradingReadPhemex, TradingReadPhemex as ReadOnlyPhemex
 from instrument_specs import inspect_instrument
 
 
@@ -30,7 +31,32 @@ class PhemexClient:
         })
         if not live:
             self.ex.set_sandbox_mode(True)
-        self.ex.load_markets()
+        self.catalog = None
+        if exchange is None and isinstance(self.ex, TradingReadPhemex):
+            # Two explicit public catalog reads, once per session. load_markets
+            # would implicitly fetch currencies through an additional route.
+            from manual_market_catalog import build_catalog
+            parsed = self.ex.fetch_markets()
+            self.catalog = build_catalog(self.ex.public_inventory, self.ex.legacy_inventory,
+                                         parsed, self.ex.precisionMode)
+            if self.catalog.issues:
+                raise SafetyError('Public market inventory is incomplete; interpretation unavailable')
+            supported = {(m.native, m.symbol) for m in self.catalog.markets if m.supported}
+            self.ex.set_markets([m for m in parsed if (m.get('id'), m.get('symbol')) in supported
+                                 and m.get('swap') is True])
+            currencies = self.ex.public_inventory.get('currencies')
+            # Numeric risk-unit currencies must have an unambiguous native map;
+            # never let duplicate public rows silently overwrite that binding.
+            if (type(currencies) is list and all(type(r) is dict and type(r.get('currency')) is str
+                    and type(r.get('code')) is int and r['code'] >= 0 for r in currencies)):
+                names = Counter(r['currency'] for r in currencies)
+                codes = Counter(r['code'] for r in currencies)
+                for raw in currencies:
+                    if (raw['currency'] in self.ex.currencies and names[raw['currency']] == 1
+                            and codes[raw['code']] == 1):
+                        self.ex.currencies[raw['currency']]['info'] = raw
+        else:
+            self.ex.load_markets()
 
     @staticmethod
     def _supported(market):
@@ -40,11 +66,15 @@ class PhemexClient:
                 and market.get("active") is True and native_status in (None, 'Listed'))
 
     def resolve(self, raw):
-        raw = (raw or "").strip().upper()
+        raw = (raw or "").strip()
         if not raw:
             raise SafetyError("Missing symbol")
-        candidates = ([self.ex.markets[raw]] if raw in self.ex.markets else
-                      [m for m in self.ex.markets.values() if m["id"] == raw])
+        if self.catalog is not None:
+            return self.catalog.resolve(raw).symbol
+        # Preserve exact identities: a spot sOLUSDT is not the SOLUSDT swap.
+        exact = [m for m in self.ex.markets.values() if raw in (m.get('id'), m.get('symbol'))]
+        candidates = exact or [m for m in self.ex.markets.values() if raw.casefold()
+                              in (m['id'].casefold(), m['symbol'].casefold())]
         matches = [m for m in candidates if self._supported(m)]
         if len(matches) != 1:
             raise SafetyError("Symbol must identify one active USDT-settled linear perpetual")
